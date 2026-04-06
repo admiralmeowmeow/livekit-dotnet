@@ -19,7 +19,7 @@ This project hosts a local LiveKit server and publishes the primary Windows scre
 ## Build the FFI DLL
 
 ```powershell
-cd D:\Development\WindowsApps\LiveKitScreenShareHost
+cd .\LiveKitScreenShareHost
 .\build-livekit-ffi.ps1
 ```
 
@@ -30,13 +30,13 @@ If Rust is not installed yet, install `rustup` first and then rerun the script.
 Download a Windows `livekit-server.exe` release binary from the official LiveKit releases page and place it at:
 
 ```text
-D:\Development\WindowsApps\LiveKitScreenShareHost\src\tools\livekit-server.exe
+.\LiveKitScreenShareHost\src\tools\livekit-server.exe
 ```
 
 ## Run
 
 ```powershell
-cd D:\Development\WindowsApps\LiveKitScreenShareHost
+cd .\LiveKitScreenShareHost
 dotnet run --project .\src\LiveKitScreenShareHost.csproj
 ```
 
