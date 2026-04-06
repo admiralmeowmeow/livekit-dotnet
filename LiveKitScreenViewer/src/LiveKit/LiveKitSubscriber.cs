@@ -409,9 +409,7 @@ internal sealed class LiveKitSubscriber : IAsyncDisposable
                 return;
             }
 
-            var bytes = new byte[checked((int)(info.Stride * info.Height))];
-            Marshal.Copy(new IntPtr((long)info.DataPtr), bytes, 0, bytes.Length);
-
+            var byteLength = checked((int)(info.Stride * info.Height));
             var frameIndex = Interlocked.Increment(ref _liveFrameIndex);
             _lastLiveFrameAtUtc = DateTimeOffset.UtcNow;
             if (frameIndex == 1 || frameIndex % 120 == 0)
@@ -420,7 +418,8 @@ internal sealed class LiveKitSubscriber : IAsyncDisposable
             }
 
             _frameBridge.SubmitRgbaFrame(
-                bytes,
+                new IntPtr((long)info.DataPtr),
+                byteLength,
                 checked((int)info.Width),
                 checked((int)info.Height),
                 checked((int)info.Stride),
@@ -530,3 +529,5 @@ internal sealed class LiveKitSubscriber : IAsyncDisposable
         }
     }
 }
+
+

@@ -10,7 +10,7 @@ public sealed partial class MainWindow : Window
 {
     private readonly DispatcherTimer _frameTimer;
     private readonly DispatcherTimer _statsTimer;
-    private readonly RgbaTestPatternGenerator _generator = new();
+    private readonly RgbaTestPatternGenerator _generator;
     private readonly AppOptions _options = AppOptions.FromEnvironment();
     private readonly LiveKitFrameBridge _liveKitFrameBridge;
     private LiveKitFfiClient? _ffiClient;
@@ -24,6 +24,7 @@ public sealed partial class MainWindow : Window
     {
         InitializeComponent();
 
+        _generator = new RgbaTestPatternGenerator(ViewerSurface.FramePool);
         _liveKitFrameBridge = new LiveKitFrameBridge(ViewerSurface);
 
         _frameTimer = new DispatcherTimer
@@ -140,13 +141,13 @@ public sealed partial class MainWindow : Window
 
     private void OnFrameTick(object? sender, object e)
     {
-        if (_isClosing)
+        if (_isClosing || !ViewerSurface.NeedsSyntheticFrame)
         {
             return;
         }
 
         var frame = _generator.CreateFrame(_frameIndex++, width: 3840, height: 2160);
-        ViewerSurface.SubmitFrame(new VideoFrame(frame.Data, frame.Width, frame.Height, frame.Stride, frame.FrameIndex, VideoFrameSource.Synthetic));
+        ViewerSurface.SubmitFrame(frame);
     }
 
     private void OnStatsTick(object? sender, object e)

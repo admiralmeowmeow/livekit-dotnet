@@ -15,32 +15,44 @@ public sealed class FrameInbox
     {
         if (frame.Source == VideoFrameSource.LiveKit)
         {
-            Interlocked.Exchange(ref _latestLiveFrame, frame);
+            var replacedLiveFrame = Interlocked.Exchange(ref _latestLiveFrame, frame);
+            replacedLiveFrame?.Dispose();
             Interlocked.Exchange(ref _lastLiveFrameTicks, DateTime.UtcNow.Ticks);
             Interlocked.Exchange(ref _hasEverReceivedLiveFrame, 1);
             return;
         }
 
-        Interlocked.Exchange(ref _latestSyntheticFrame, frame);
+        var replacedSyntheticFrame = Interlocked.Exchange(ref _latestSyntheticFrame, frame);
+        replacedSyntheticFrame?.Dispose();
     }
 
     public VideoFrame? TakeLatestForRender()
     {
-        var latestLiveFrame = Volatile.Read(ref _latestLiveFrame);
+        var latestLiveFrame = RetainForRender(Volatile.Read(ref _latestLiveFrame));
 
         if (HasRecentLiveFrame())
         {
             return latestLiveFrame;
         }
 
-        // Once the real stream has started, keep showing the last live frame through
-        // short hiccups instead of visibly bouncing back to the synthetic fallback.
         if (latestLiveFrame is not null && HasEverReceivedLiveFrame() && !HasTimedOutForFallback())
         {
             return latestLiveFrame;
         }
 
-        return Volatile.Read(ref _latestSyntheticFrame);
+        latestLiveFrame?.Dispose();
+        return RetainForRender(Volatile.Read(ref _latestSyntheticFrame));
+    }
+
+    public bool NeedsSyntheticFrame()
+    {
+        var latestLiveFrame = Volatile.Read(ref _latestLiveFrame);
+        if (latestLiveFrame is null)
+        {
+            return true;
+        }
+
+        return !HasRecentLiveFrame() && HasTimedOutForFallback();
     }
 
     public bool HasRecentLiveFrame()
@@ -52,6 +64,18 @@ public sealed class FrameInbox
         }
 
         return DateTime.UtcNow.Ticks - lastLiveTicks <= _liveFrameTimeoutTicks;
+    }
+
+    public void Clear()
+    {
+        var liveFrame = Interlocked.Exchange(ref _latestLiveFrame, null);
+        liveFrame?.Dispose();
+
+        var syntheticFrame = Interlocked.Exchange(ref _latestSyntheticFrame, null);
+        syntheticFrame?.Dispose();
+
+        Interlocked.Exchange(ref _lastLiveFrameTicks, 0);
+        Interlocked.Exchange(ref _hasEverReceivedLiveFrame, 0);
     }
 
     private bool HasEverReceivedLiveFrame()
@@ -68,5 +92,12 @@ public sealed class FrameInbox
         }
 
         return DateTime.UtcNow.Ticks - lastLiveTicks > _fallbackReentryTimeoutTicks;
+    }
+
+    private static VideoFrame? RetainForRender(VideoFrame? frame)
+    {
+        return frame is not null && frame.TryAddReference()
+            ? frame
+            : null;
     }
 }

@@ -34,6 +34,14 @@ public sealed class RenderLoop : IDisposable
 
     private void OnTick(DispatcherQueueTimer sender, object args)
     {
-        _renderAction(_frameInbox.TakeLatestForRender());
+        var latestFrame = _frameInbox.TakeLatestForRender();
+        try
+        {
+            _renderAction(latestFrame);
+        }
+        finally
+        {
+            latestFrame?.Dispose();
+        }
     }
 }

@@ -1,3 +1,5 @@
+using System;
+using System.Runtime.InteropServices;
 using LiveKitScreenViewer.Controls;
 using LiveKitScreenViewer.Frames;
 
@@ -12,8 +14,10 @@ public sealed class LiveKitFrameBridge
         _videoView = videoView;
     }
 
-    public void SubmitRgbaFrame(byte[] rgba, int width, int height, int stride, long frameIndex)
+    public void SubmitRgbaFrame(IntPtr sourceData, int byteLength, int width, int height, int stride, long frameIndex)
     {
-        _videoView.SubmitFrame(new VideoFrame(rgba, width, height, stride, frameIndex, VideoFrameSource.LiveKit));
+        var frame = _videoView.FramePool.Rent(byteLength, width, height, stride, frameIndex, VideoFrameSource.LiveKit);
+        Marshal.Copy(sourceData, frame.Data, 0, byteLength);
+        _videoView.SubmitFrame(frame);
     }
 }

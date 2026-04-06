@@ -7,6 +7,7 @@ namespace LiveKitScreenViewer.Controls;
 
 public sealed partial class VideoView : UserControl, IDisposable
 {
+    private readonly VideoFramePool _framePool = new();
     private readonly FrameInbox _frameInbox = new();
     private DxDeviceManager? _deviceManager;
     private SwapChainPanelHost? _panelHost;
@@ -25,6 +26,10 @@ public sealed partial class VideoView : UserControl, IDisposable
 
     public double CurrentRenderFps => _renderer?.CurrentFramesPerSecond ?? 0;
 
+    public VideoFramePool FramePool => _framePool;
+
+    public bool NeedsSyntheticFrame => _frameInbox.NeedsSyntheticFrame();
+
     public string CurrentContentLabel => _currentFrameWidth <= 0 || _currentFrameHeight <= 0
         ? "No frames yet"
         : $"{_currentFrameWidth}x{_currentFrameHeight}";
@@ -41,6 +46,7 @@ public sealed partial class VideoView : UserControl, IDisposable
     {
         if (_disposed)
         {
+            frame.Dispose();
             return;
         }
 
@@ -59,6 +65,7 @@ public sealed partial class VideoView : UserControl, IDisposable
         _renderer?.Dispose();
         _panelHost?.Dispose();
         _deviceManager?.Dispose();
+        _frameInbox.Clear();
     }
 
     private void OnLoaded(object sender, RoutedEventArgs e)
@@ -103,6 +110,9 @@ public sealed partial class VideoView : UserControl, IDisposable
         _currentFrameWidth = frame.Width;
         _currentFrameHeight = frame.Height;
         IdleOverlay.Visibility = Visibility.Collapsed;
+        LiveOverlay.Visibility = frame.Source == VideoFrameSource.LiveKit
+            ? Visibility.Collapsed
+            : Visibility.Visible;
 
         if (_lastRenderedSource != frame.Source)
         {

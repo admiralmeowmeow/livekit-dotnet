@@ -1,11 +1,19 @@
-﻿namespace LiveKitScreenViewer.Frames;
+namespace LiveKitScreenViewer.Frames;
 
 public sealed class RgbaTestPatternGenerator
 {
+    private readonly VideoFramePool _framePool;
+
+    public RgbaTestPatternGenerator(VideoFramePool framePool)
+    {
+        _framePool = framePool;
+    }
+
     public VideoFrame CreateFrame(long frameIndex, int width, int height)
     {
-        var pixels = new byte[width * height * 4];
         var stride = width * 4;
+        var frame = _framePool.Rent(stride * height, width, height, stride, frameIndex, VideoFrameSource.Synthetic);
+        var pixels = frame.PixelSpan;
         var t = (int)(frameIndex % 360);
 
         for (var y = 0; y < height; y++)
@@ -35,6 +43,6 @@ public sealed class RgbaTestPatternGenerator
             }
         }
 
-        return new VideoFrame(pixels, width, height, stride, frameIndex);
+        return frame;
     }
 }

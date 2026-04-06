@@ -13,41 +13,61 @@
         <MicaBackdrop />
     </Window.SystemBackdrop>
 
-    <Grid Padding="20" RowSpacing="16">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="*" />
-            <RowDefinition Height="Auto" />
-        </Grid.RowDefinitions>
+    <Grid Background="#FF000000">
+        <controls:VideoView x:Name="ViewerSurface" />
 
-        <StackPanel Spacing="6">
-            <TextBlock Text="LiveKit Screen Viewer" FontSize="28" FontWeight="SemiBold" />
-            <TextBlock
-                Text="WinUI 3 viewer using SwapChainPanel + D3D11 + Vortice. Video is aspect-fitted to the window and the render FPS below reflects what the app is actually presenting."
-                TextWrapping="Wrap"
-                Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-        </StackPanel>
+        <Grid Padding="16">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
 
-        <controls:VideoView x:Name="ViewerSurface" Grid.Row="1" MinHeight="420" />
-
-        <Grid Grid.Row="2" ColumnSpacing="20">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="Auto" />
-            </Grid.ColumnDefinitions>
-
-            <StackPanel Spacing="4">
-                <TextBlock x:Name="RenderStatusText" Text="Renderer starting..." FontWeight="SemiBold" />
-                <TextBlock x:Name="FeedStatusText" Text="Content: waiting for frames" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                <TextBlock x:Name="LiveKitStatusText" Text="LiveKit: not connected yet" TextWrapping="WrapWholeWords" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-            </StackPanel>
-
-            <Border Grid.Column="1" Padding="10,6" CornerRadius="8" Background="{ThemeResource ControlFillColorSecondaryBrush}">
-                <StackPanel Spacing="2">
-                    <TextBlock x:Name="BackendText" Text="Backend: initializing" />
-                    <TextBlock x:Name="FpsText" Text="Render FPS: 0.0" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+            <Border
+                HorizontalAlignment="Center"
+                VerticalAlignment="Top"
+                MaxWidth="880"
+                Padding="14,10"
+                CornerRadius="12"
+                Background="#B0000000">
+                <StackPanel Spacing="4">
+                    <TextBlock Text="LiveKit Screen Viewer" FontSize="24" FontWeight="SemiBold" />
+                    <TextBlock
+                        Text="Incoming video is scaled to fit the available space while preserving the source aspect ratio."
+                        TextWrapping="Wrap"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                 </StackPanel>
             </Border>
+
+            <Grid Grid.Row="2" ColumnSpacing="12" VerticalAlignment="Bottom" HorizontalAlignment="Center" MaxWidth="1200">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <Border
+                    Grid.Column="0"
+                    Padding="12,10"
+                    CornerRadius="12"
+                    Background="#B0000000">
+                    <StackPanel Spacing="4">
+                        <TextBlock x:Name="RenderStatusText" Text="Renderer starting..." FontWeight="SemiBold" />
+                        <TextBlock x:Name="FeedStatusText" Text="Content: waiting for frames" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <TextBlock x:Name="LiveKitStatusText" Text="LiveKit: not connected yet" TextWrapping="WrapWholeWords" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    </StackPanel>
+                </Border>
+
+                <Border
+                    Grid.Column="1"
+                    Padding="12,10"
+                    CornerRadius="12"
+                    Background="#B0000000">
+                    <StackPanel Spacing="2">
+                        <TextBlock x:Name="BackendText" Text="Backend: initializing" />
+                        <TextBlock x:Name="FpsText" Text="Render FPS: 0.0" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    </StackPanel>
+                </Border>
+            </Grid>
         </Grid>
     </Grid>
 </Window>
