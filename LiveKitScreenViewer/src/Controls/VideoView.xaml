@@ -1,0 +1,47 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<UserControl
+    x:Class="LiveKitScreenViewer.Controls.VideoView"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <Border
+        CornerRadius="16"
+        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+        BorderThickness="1"
+        Background="#FF101214"
+        Padding="1">
+        <Grid>
+            <SwapChainPanel x:Name="SwapChainSurface" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" />
+
+            <StackPanel
+                x:Name="IdleOverlay"
+                HorizontalAlignment="Center"
+                VerticalAlignment="Center"
+                Spacing="8">
+                <TextBlock Text="Awaiting frames" FontSize="24" FontWeight="SemiBold" HorizontalAlignment="Center" />
+                <TextBlock
+                    Text="The viewer keeps the original video aspect ratio and will switch from fallback frames to the shared LiveKit stream as soon as frames arrive."
+                    TextAlignment="Center"
+                    TextWrapping="Wrap"
+                    MaxWidth="560"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+            </StackPanel>
+
+            <Border
+                HorizontalAlignment="Left"
+                VerticalAlignment="Top"
+                Margin="16"
+                Padding="10,6"
+                CornerRadius="8"
+                Background="#A0000000">
+                <StackPanel Spacing="2">
+                    <TextBlock x:Name="OverlayTitleText" Text="VideoView" FontWeight="SemiBold" />
+                    <TextBlock x:Name="OverlayDetailText" Text="No frames yet" FontSize="12" Foreground="#FFD7D7D7" />
+                </StackPanel>
+            </Border>
+        </Grid>
+    </Border>
+</UserControl>

@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="LiveKitScreenShareHost.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:local="using:LiveKitScreenShareHost"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:model="using:LiveKitScreenShareHost.Capture"
+    mc:Ignorable="d">
+
+    <Grid Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <StackPanel Spacing="6" Margin="24,24,24,16">
+            <TextBlock Text="LiveKit Screen Share Host"
+                       FontSize="28"
+                       FontWeight="SemiBold" />
+            <TextBlock x:Name="SubtitleText"
+                       Text="Choose a connected display and stream it to LiveKit as RGBA at 60 fps."
+                       Opacity="0.8"
+                       TextWrapping="WrapWholeWords" />
+            <TextBlock x:Name="ServerUrlText"
+                       Opacity="0.78"
+                       TextWrapping="WrapWholeWords" />
+        </StackPanel>
+
+        <Border Grid.Row="1"
+                Margin="24,0,24,16"
+                Padding="18"
+                CornerRadius="16"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1"
+                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}">
+            <StackPanel Spacing="14">
+                <TextBlock Text="Available Displays"
+                           FontSize="18"
+                           FontWeight="SemiBold" />
+
+                <RadioButtons x:Name="DisplayRadioButtons"
+                              SelectionChanged="DisplayRadioButtons_SelectionChanged">
+                    <RadioButtons.ItemTemplate>
+                        <DataTemplate x:DataType="model:DisplayOption">
+                            <StackPanel Spacing="2">
+                                <TextBlock Text="{x:Bind DisplayName}" FontWeight="SemiBold" />
+                                <TextBlock Text="{x:Bind Description}" Opacity="0.78" TextWrapping="WrapWholeWords" />
+                            </StackPanel>
+                        </DataTemplate>
+                    </RadioButtons.ItemTemplate>
+                </RadioButtons>
+
+                <TextBlock x:Name="StatusText"
+                           Text="Ready. Select a display and press Share."
+                           TextWrapping="WrapWholeWords" />
+
+                <StackPanel Orientation="Horizontal" Spacing="10">
+                    <TextBlock Text="Viewer:"
+                               VerticalAlignment="Center"
+                               Opacity="0.78" />
+                    <HyperlinkButton x:Name="ViewerLinkButton"
+                                     Content="Open local viewer"
+                                     Click="ViewerLinkButton_Click"
+                                     IsEnabled="False" />
+                </StackPanel>
+            </StackPanel>
+        </Border>
+
+        <Grid Grid.Row="2" Margin="24,0,24,24" ColumnSpacing="12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <TextBlock x:Name="StreamingInfoText"
+                       VerticalAlignment="Center"
+                       Opacity="0.8"
+                       Text="No active stream." />
+
+            <Button x:Name="ShareButton"
+                    Grid.Column="1"
+                    MinWidth="140"
+                    Click="ShareButton_Click"
+                    Content="Share" />
+
+            <Button x:Name="StopButton"
+                    Grid.Column="2"
+                    MinWidth="140"
+                    Click="StopButton_Click"
+                    Content="Stop"
+                    IsEnabled="False" />
+        </Grid>
+    </Grid>
+</Window>
