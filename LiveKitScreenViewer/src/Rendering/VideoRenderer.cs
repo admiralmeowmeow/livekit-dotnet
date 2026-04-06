@@ -1,7 +1,6 @@
-using System.Runtime.InteropServices;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Text;
-using System.Numerics;
 using LiveKitScreenViewer.Frames;
 using Vortice.Direct3D;
 using Vortice.Direct3D11;
@@ -18,13 +17,14 @@ public sealed class VideoRenderer : IDisposable
     private readonly ID3D11PixelShader _pixelShader;
     private readonly ID3D11InputLayout _inputLayout;
     private readonly ID3D11Buffer _vertexBuffer;
-    private readonly ID3D11Buffer _transformBuffer;
     private readonly ID3D11SamplerState _samplerState;
     private readonly uint _vertexStride = (uint)Marshal.SizeOf<QuadVertex>();
     private ID3D11Texture2D? _frameTexture;
     private ID3D11ShaderResourceView? _frameShaderResourceView;
     private uint _frameWidth;
     private uint _frameHeight;
+    private long _lastUploadedFrameIndex = -1;
+    private VideoFrameSource? _lastUploadedFrameSource;
     private double _currentFramesPerSecond;
     private int _framesPresentedSinceLastSample;
     private DateTime _lastFpsSampleUtc = DateTime.UtcNow;
@@ -82,14 +82,6 @@ public sealed class VideoRenderer : IDisposable
             new Color4(0f, 0f, 0f, 0f),
             0.0f,
             float.MaxValue));
-
-        _transformBuffer = _deviceManager.Device.CreateBuffer(new BufferDescription(
-            (uint)Marshal.SizeOf<TransformConstants>(),
-            BindFlags.ConstantBuffer,
-            ResourceUsage.Dynamic,
-            CpuAccessFlags.Write,
-            ResourceOptionFlags.None,
-            0));
     }
 
     public double CurrentFramesPerSecond => _currentFramesPerSecond;
@@ -110,15 +102,13 @@ public sealed class VideoRenderer : IDisposable
 
         var context = _deviceManager.Context;
         context.ClearRenderTargetView(_panelHost.RenderTargetView, new Color4(0.0f, 0.0f, 0.0f, 1.0f));
-        context.RSSetViewports(new[] { CreateFullViewport() });
-        context.OMSetRenderTargets(new[] { _panelHost.RenderTargetView }, null);
-        context.PSSetShaderResources(0, new[] { _frameShaderResourceView });
-        context.PSSetSamplers(0, new[] { _samplerState });
-        context.IASetVertexBuffers(0, new[] { _vertexBuffer }, new uint[] { _vertexStride }, new uint[] { 0 });
+        context.RSSetViewports([CreateFullViewport()]);
+        context.OMSetRenderTargets([_panelHost.RenderTargetView], null);
+        context.PSSetShaderResources(0, [_frameShaderResourceView]);
+        context.PSSetSamplers(0, [_samplerState]);
+        context.IASetVertexBuffers(0, [_vertexBuffer], [_vertexStride], [0]);
         context.IASetPrimitiveTopology(PrimitiveTopology.TriangleStrip);
         context.IASetInputLayout(_inputLayout);
-        UpdateAspectFitTransform();
-        context.VSSetConstantBuffers(0, new[] { _transformBuffer });
         context.VSSetShader(_vertexShader);
         context.PSSetShader(_pixelShader);
         context.Draw(4, 0);
@@ -131,7 +121,6 @@ public sealed class VideoRenderer : IDisposable
     {
         _frameShaderResourceView?.Dispose();
         _frameTexture?.Dispose();
-        _transformBuffer.Dispose();
         _samplerState.Dispose();
         _vertexBuffer.Dispose();
         _inputLayout.Dispose();
@@ -143,8 +132,9 @@ public sealed class VideoRenderer : IDisposable
     {
         var width = (uint)frame.Width;
         var height = (uint)frame.Height;
+        var needsTextureResize = _frameTexture is null || _frameWidth != width || _frameHeight != height;
 
-        if (_frameTexture is null || _frameWidth != width || _frameHeight != height)
+        if (needsTextureResize)
         {
             _frameShaderResourceView?.Dispose();
             _frameTexture?.Dispose();
@@ -164,6 +154,15 @@ public sealed class VideoRenderer : IDisposable
             _frameShaderResourceView = _deviceManager.Device.CreateShaderResourceView(_frameTexture, null);
             _frameWidth = width;
             _frameHeight = height;
+            _lastUploadedFrameIndex = -1;
+            _lastUploadedFrameSource = null;
+        }
+
+        if (!needsTextureResize &&
+            _lastUploadedFrameIndex == frame.FrameIndex &&
+            _lastUploadedFrameSource == frame.Source)
+        {
+            return;
         }
 
         unsafe
@@ -173,45 +172,14 @@ public sealed class VideoRenderer : IDisposable
                 _deviceManager.Context.UpdateSubresource(_frameTexture!, 0, null, new IntPtr(pixelData), (uint)frame.Stride, 0);
             }
         }
+
+        _lastUploadedFrameIndex = frame.FrameIndex;
+        _lastUploadedFrameSource = frame.Source;
     }
 
     private Viewport CreateFullViewport()
     {
         return new Viewport(0, 0, _panelHost.BufferWidth, _panelHost.BufferHeight);
-    }
-
-    private void UpdateAspectFitTransform()
-    {
-        if (_frameWidth == 0 || _frameHeight == 0 || _panelHost.BufferWidth == 0 || _panelHost.BufferHeight == 0)
-        {
-            return;
-        }
-
-        var frameAspectRatio = (float)_frameWidth / _frameHeight;
-        var panelAspectRatio = (float)_panelHost.BufferWidth / _panelHost.BufferHeight;
-        var scale = Vector2.One;
-
-        if (panelAspectRatio > frameAspectRatio)
-        {
-            scale.X = frameAspectRatio / panelAspectRatio;
-        }
-        else
-        {
-            scale.Y = panelAspectRatio / frameAspectRatio;
-        }
-
-        var mappedResource = _deviceManager.Context.Map(_transformBuffer, 0, MapMode.WriteDiscard, Vortice.Direct3D11.MapFlags.None);
-        try
-        {
-            unsafe
-            {
-                *(TransformConstants*)mappedResource.DataPointer = new TransformConstants(scale.X, scale.Y);
-            }
-        }
-        finally
-        {
-            _deviceManager.Context.Unmap(_transformBuffer, 0);
-        }
     }
 
     private void UpdatePresentedFramesPerSecond()
@@ -368,12 +336,6 @@ struct VSInput
     float2 texCoord : TEXCOORD0;
 };
 
-cbuffer TransformConstants : register(b0)
-{
-    float2 videoScale;
-    float2 padding;
-};
-
 struct PSInput
 {
     float4 position : SV_POSITION;
@@ -383,7 +345,7 @@ struct PSInput
 PSInput VSMain(VSInput input)
 {
     PSInput output;
-    output.position = float4(input.position.xy * videoScale, 0.0f, 1.0f);
+    output.position = float4(input.position.xy, 0.0f, 1.0f);
     output.texCoord = input.texCoord;
     return output;
 }
@@ -398,24 +360,4 @@ float4 PSMain(float4 position : SV_POSITION, float2 texCoord : TEXCOORD0) : SV_T
     return sourceTexture.Sample(sourceSampler, texCoord);
 }
 """;
-
-    [StructLayout(LayoutKind.Sequential)]
-    private readonly struct TransformConstants
-    {
-        public TransformConstants(float scaleX, float scaleY)
-        {
-            ScaleX = scaleX;
-            ScaleY = scaleY;
-            Padding0 = 0f;
-            Padding1 = 0f;
-        }
-
-        public float ScaleX { get; }
-
-        public float ScaleY { get; }
-
-        public float Padding0 { get; }
-
-        public float Padding1 { get; }
-    }
 }

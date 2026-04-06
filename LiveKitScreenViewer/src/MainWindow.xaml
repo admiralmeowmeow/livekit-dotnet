@@ -17,29 +17,7 @@
         <controls:VideoView x:Name="ViewerSurface" />
 
         <Grid Padding="16">
-            <Grid.RowDefinitions>
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="*" />
-                <RowDefinition Height="Auto" />
-            </Grid.RowDefinitions>
-
-            <Border
-                HorizontalAlignment="Center"
-                VerticalAlignment="Top"
-                MaxWidth="880"
-                Padding="14,10"
-                CornerRadius="12"
-                Background="#B0000000">
-                <StackPanel Spacing="4">
-                    <TextBlock Text="LiveKit Screen Viewer" FontSize="24" FontWeight="SemiBold" />
-                    <TextBlock
-                        Text="Incoming video is scaled to fit the available space while preserving the source aspect ratio."
-                        TextWrapping="Wrap"
-                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                </StackPanel>
-            </Border>
-
-            <Grid Grid.Row="2" ColumnSpacing="12" VerticalAlignment="Bottom" HorizontalAlignment="Center" MaxWidth="1200">
+            <Grid ColumnSpacing="12" VerticalAlignment="Bottom" HorizontalAlignment="Center" MaxWidth="1200">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />

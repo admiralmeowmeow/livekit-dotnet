@@ -91,6 +91,7 @@ public sealed partial class VideoView : UserControl, IDisposable
 
     private void OnSizeChanged(object sender, SizeChangedEventArgs e)
     {
+        UpdateSwapChainSurfaceLayout();
         _panelHost?.InvalidatePanelMetrics();
     }
 
@@ -109,6 +110,7 @@ public sealed partial class VideoView : UserControl, IDisposable
     {
         _currentFrameWidth = frame.Width;
         _currentFrameHeight = frame.Height;
+        UpdateSwapChainSurfaceLayout();
         IdleOverlay.Visibility = Visibility.Collapsed;
         LiveOverlay.Visibility = frame.Source == VideoFrameSource.LiveKit
             ? Visibility.Collapsed
@@ -137,6 +139,41 @@ public sealed partial class VideoView : UserControl, IDisposable
     private void RaiseRendererStateChanged(string statusText)
     {
         RendererStateChanged?.Invoke(this, new RendererStateChangedEventArgs(CurrentBackendLabel, statusText));
+    }
+
+    private void UpdateSwapChainSurfaceLayout()
+    {
+        if (ActualWidth <= 0 || ActualHeight <= 0)
+        {
+            return;
+        }
+
+        if (_currentFrameWidth <= 0 || _currentFrameHeight <= 0)
+        {
+            SwapChainSurface.Width = ActualWidth;
+            SwapChainSurface.Height = ActualHeight;
+            return;
+        }
+
+        var frameAspectRatio = (double)_currentFrameWidth / _currentFrameHeight;
+        var availableAspectRatio = ActualWidth / ActualHeight;
+
+        double surfaceWidth;
+        double surfaceHeight;
+
+        if (availableAspectRatio > frameAspectRatio)
+        {
+            surfaceHeight = ActualHeight;
+            surfaceWidth = surfaceHeight * frameAspectRatio;
+        }
+        else
+        {
+            surfaceWidth = ActualWidth;
+            surfaceHeight = surfaceWidth / frameAspectRatio;
+        }
+
+        SwapChainSurface.Width = Math.Max(1.0, surfaceWidth);
+        SwapChainSurface.Height = Math.Max(1.0, surfaceHeight);
     }
 }
 
