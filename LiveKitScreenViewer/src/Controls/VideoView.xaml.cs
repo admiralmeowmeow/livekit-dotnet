@@ -97,20 +97,28 @@ public sealed partial class VideoView : UserControl, IDisposable
 
     private void RenderFrame(VideoFrame? latestFrame)
     {
-        if (_renderer is null || latestFrame is null)
+        if (_renderer is null)
         {
             return;
         }
 
+        if (latestFrame is not null)
+        {
+            _currentFrameWidth = latestFrame.Width;
+            _currentFrameHeight = latestFrame.Height;
+            UpdateSwapChainSurfaceLayout();
+        }
+
         _renderer.Render(latestFrame);
-        UpdateOverlay(latestFrame);
+
+        if (latestFrame is not null)
+        {
+            UpdateOverlay(latestFrame);
+        }
     }
 
     private void UpdateOverlay(VideoFrame frame)
     {
-        _currentFrameWidth = frame.Width;
-        _currentFrameHeight = frame.Height;
-        UpdateSwapChainSurfaceLayout();
         IdleOverlay.Visibility = Visibility.Collapsed;
         LiveOverlay.Visibility = frame.Source == VideoFrameSource.LiveKit
             ? Visibility.Collapsed
