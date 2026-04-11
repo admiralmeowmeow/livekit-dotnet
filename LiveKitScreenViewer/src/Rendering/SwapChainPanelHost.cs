@@ -1,7 +1,5 @@
 using System.Runtime.InteropServices;
 using Microsoft.UI.Xaml.Controls;
-using Vortice.Direct3D11;
-using Vortice.DXGI;
 using WinRT;
 
 namespace LiveKitScreenViewer.Rendering;
@@ -19,8 +17,8 @@ public sealed class SwapChainPanelHost : IDisposable
 
     private readonly SwapChainPanel _panel;
     private readonly DxDeviceManager _deviceManager;
-    private IDXGISwapChain1? _swapChain;
-    private ID3D11RenderTargetView? _renderTargetView;
+    private IntPtr _swapChain;
+    private IntPtr _renderTargetView;
     private uint _bufferWidth;
     private uint _bufferHeight;
 
@@ -30,9 +28,9 @@ public sealed class SwapChainPanelHost : IDisposable
         _deviceManager = deviceManager;
     }
 
-    public IDXGISwapChain1 SwapChain => _swapChain ?? throw new InvalidOperationException("Swap chain has not been initialized.");
+    public IntPtr SwapChain => _swapChain != IntPtr.Zero ? _swapChain : throw new InvalidOperationException("Swap chain has not been initialized.");
 
-    public ID3D11RenderTargetView RenderTargetView => _renderTargetView ?? throw new InvalidOperationException("Render target view has not been initialized.");
+    public IntPtr RenderTargetView => _renderTargetView != IntPtr.Zero ? _renderTargetView : throw new InvalidOperationException("Render target view has not been initialized.");
 
     public uint BufferWidth => _bufferWidth;
 
@@ -47,24 +45,24 @@ public sealed class SwapChainPanelHost : IDisposable
     {
         var (width, height) = GetPanelPixelSize(preferredWidth, preferredHeight);
 
-        if (_swapChain is null)
+        if (_swapChain == IntPtr.Zero)
         {
             var description = new SwapChainDescription1
             {
                 Width = width,
                 Height = height,
-                Format = Format.R8G8B8A8_UNorm,
+                Format = DxgiFormat.R8G8B8A8UNorm,
                 Stereo = false,
                 SampleDescription = new SampleDescription(1, 0),
-                BufferUsage = Usage.RenderTargetOutput,
-                BufferCount = 2,
+                BufferUsage = Direct3D11Interop.DxgiUsageRenderTargetOutput,
+                BufferCount = 3,
                 Scaling = Scaling.Stretch,
                 SwapEffect = SwapEffect.FlipSequential,
                 AlphaMode = AlphaMode.Ignore,
-                Flags = SwapChainFlags.None,
+                Flags = 0,
             };
 
-            _swapChain = _deviceManager.Factory.CreateSwapChainForComposition(_deviceManager.Device, description);
+            _swapChain = Direct3D11Interop.CreateSwapChainForComposition(_deviceManager.Factory, _deviceManager.Device, description);
             AttachToPanel(_swapChain);
             _bufferWidth = width;
             _bufferHeight = height;
@@ -74,9 +72,8 @@ public sealed class SwapChainPanelHost : IDisposable
 
         if (_bufferWidth != width || _bufferHeight != height)
         {
-            _renderTargetView?.Dispose();
-            _renderTargetView = null;
-            _swapChain.ResizeBuffers(2, width, height, Format.R8G8B8A8_UNorm, SwapChainFlags.None).CheckError();
+            Direct3D11Interop.Release(ref _renderTargetView);
+            Direct3D11Interop.ResizeBuffers(_swapChain, 3, width, height, DxgiFormat.R8G8B8A8UNorm, 0);
             _bufferWidth = width;
             _bufferHeight = height;
             CreateRenderTargetView();
@@ -85,13 +82,16 @@ public sealed class SwapChainPanelHost : IDisposable
 
     public void Present()
     {
-        _swapChain?.Present(1, PresentFlags.None);
+        if (_swapChain != IntPtr.Zero)
+        {
+            Direct3D11Interop.Present(_swapChain, 1, 0);
+        }
     }
 
     public void Dispose()
     {
-        _renderTargetView?.Dispose();
-        _swapChain?.Dispose();
+        Direct3D11Interop.Release(ref _renderTargetView);
+        Direct3D11Interop.Release(ref _swapChain);
     }
 
     private (uint Width, uint Height) GetPanelPixelSize(uint fallbackWidth, uint fallbackHeight)
@@ -111,11 +111,18 @@ public sealed class SwapChainPanelHost : IDisposable
 
     private void CreateRenderTargetView()
     {
-        using var backBuffer = _swapChain!.GetBuffer<ID3D11Texture2D>(0);
-        _renderTargetView = _deviceManager.Device.CreateRenderTargetView(backBuffer);
+        var backBuffer = Direct3D11Interop.GetBuffer(_swapChain, 0, Direct3D11Interop.IidD3D11Texture2D);
+        try
+        {
+            _renderTargetView = Direct3D11Interop.CreateRenderTargetView(_deviceManager.Device, backBuffer);
+        }
+        finally
+        {
+            Direct3D11Interop.Release(ref backBuffer);
+        }
     }
 
-    private void AttachToPanel(IDXGISwapChain1 swapChain)
+    private void AttachToPanel(IntPtr swapChain)
     {
         var winrtObject = (IWinRTObject)_panel;
         IntPtr unknownPointer = winrtObject.NativeObject.ThisPtr;
@@ -129,7 +136,7 @@ public sealed class SwapChainPanelHost : IDisposable
         try
         {
             var nativePanel = (ISwapChainPanelNative)Marshal.GetObjectForIUnknown(panelPointer);
-            nativePanel.SetSwapChain(swapChain.NativePointer);
+            nativePanel.SetSwapChain(swapChain);
         }
         finally
         {

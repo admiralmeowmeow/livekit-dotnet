@@ -17,7 +17,14 @@ public sealed class LiveKitFrameBridge
     public void SubmitRgbaFrame(IntPtr sourceData, int byteLength, int width, int height, int stride, long frameIndex)
     {
         var frame = _videoView.FramePool.Rent(byteLength, width, height, stride, frameIndex, VideoFrameSource.LiveKit);
-        Marshal.Copy(sourceData, frame.Data, 0, byteLength);
+        unsafe
+        {
+            fixed (byte* destination = frame.Data)
+            {
+                Buffer.MemoryCopy((void*)sourceData, destination, frame.Data.Length, byteLength);
+            }
+        }
+
         _videoView.SubmitFrame(frame);
     }
 }

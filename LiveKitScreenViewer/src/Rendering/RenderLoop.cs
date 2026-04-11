@@ -1,38 +1,44 @@
 using LiveKitScreenViewer.Frames;
 using Microsoft.UI.Dispatching;
+using Microsoft.UI.Xaml.Media;
 
 namespace LiveKitScreenViewer.Rendering;
 
 public sealed class RenderLoop : IDisposable
 {
-    private readonly DispatcherQueueTimer _timer;
     private readonly FrameInbox _frameInbox;
     private readonly Action<VideoFrame?> _renderAction;
+    private bool _isStarted;
 
     public RenderLoop(DispatcherQueue dispatcherQueue, FrameInbox frameInbox, Action<VideoFrame?> renderAction)
     {
         _frameInbox = frameInbox;
         _renderAction = renderAction;
-        _timer = dispatcherQueue.CreateTimer();
-        _timer.Interval = TimeSpan.FromMilliseconds(1000.0 / 60.0);
-        _timer.Tick += OnTick;
     }
 
     public void Start()
     {
-        if (!_timer.IsRunning)
+        if (_isStarted)
         {
-            _timer.Start();
+            return;
         }
+
+        CompositionTarget.Rendering += OnRendering;
+        _isStarted = true;
     }
 
     public void Dispose()
     {
-        _timer.Stop();
-        _timer.Tick -= OnTick;
+        if (!_isStarted)
+        {
+            return;
+        }
+
+        CompositionTarget.Rendering -= OnRendering;
+        _isStarted = false;
     }
 
-    private void OnTick(DispatcherQueueTimer sender, object args)
+    private void OnRendering(object? sender, object args)
     {
         var latestFrame = _frameInbox.TakeLatestForRender();
         try

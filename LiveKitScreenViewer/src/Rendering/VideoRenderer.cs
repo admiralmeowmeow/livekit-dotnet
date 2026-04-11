@@ -2,10 +2,6 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
 using LiveKitScreenViewer.Frames;
-using Vortice.Direct3D;
-using Vortice.Direct3D11;
-using Vortice.DXGI;
-using Vortice.Mathematics;
 
 namespace LiveKitScreenViewer.Rendering;
 
@@ -13,14 +9,15 @@ public sealed class VideoRenderer : IDisposable
 {
     private readonly DxDeviceManager _deviceManager;
     private readonly SwapChainPanelHost _panelHost;
-    private readonly ID3D11VertexShader _vertexShader;
-    private readonly ID3D11PixelShader _pixelShader;
-    private readonly ID3D11InputLayout _inputLayout;
-    private readonly ID3D11Buffer _vertexBuffer;
-    private readonly ID3D11SamplerState _samplerState;
+    private readonly IntPtr _vertexShader;
+    private readonly IntPtr _pixelShader;
+    private readonly IntPtr _inputLayout;
+    private readonly IntPtr _vertexBuffer;
+    private readonly IntPtr _transformBuffer;
+    private readonly IntPtr _samplerState;
     private readonly uint _vertexStride = (uint)Marshal.SizeOf<QuadVertex>();
-    private ID3D11Texture2D? _frameTexture;
-    private ID3D11ShaderResourceView? _frameShaderResourceView;
+    private IntPtr _frameTexture;
+    private IntPtr _frameShaderResourceView;
     private uint _frameWidth;
     private uint _frameHeight;
     private long _lastUploadedFrameIndex = -1;
@@ -37,14 +34,26 @@ public sealed class VideoRenderer : IDisposable
         var vertexShaderBytes = CompileShader(VertexShaderSource, "VSMain", "vs_4_0");
         var pixelShaderBytes = CompileShader(PixelShaderSource, "PSMain", "ps_4_0");
 
-        _vertexShader = _deviceManager.Device.CreateVertexShader(vertexShaderBytes, null);
-        _pixelShader = _deviceManager.Device.CreatePixelShader(pixelShaderBytes, null);
-        _inputLayout = _deviceManager.Device.CreateInputLayout(
-            [
-                new InputElementDescription("POSITION", 0, Format.R32G32_Float, 0, 0),
-                new InputElementDescription("TEXCOORD", 0, Format.R32G32_Float, 8, 0),
-            ],
-            vertexShaderBytes);
+        _vertexShader = Direct3D11Interop.CreateVertexShader(_deviceManager.Device, vertexShaderBytes);
+        _pixelShader = Direct3D11Interop.CreatePixelShader(_deviceManager.Device, pixelShaderBytes);
+
+        unsafe
+        {
+            ReadOnlySpan<byte> positionSemantic = "POSITION\0"u8;
+            ReadOnlySpan<byte> texCoordSemantic = "TEXCOORD\0"u8;
+
+            fixed (byte* pPosition = positionSemantic)
+            fixed (byte* pTexCoord = texCoordSemantic)
+            {
+                var inputElements = new[]
+                {
+                    new InputElementDescription { SemanticName = (sbyte*)pPosition, SemanticIndex = 0, Format = DxgiFormat.R32G32Float, InputSlot = 0, AlignedByteOffset = 0 },
+                    new InputElementDescription { SemanticName = (sbyte*)pTexCoord, SemanticIndex = 0, Format = DxgiFormat.R32G32Float, InputSlot = 0, AlignedByteOffset = 8 },
+                };
+
+                _inputLayout = Direct3D11Interop.CreateInputLayout(_deviceManager.Device, inputElements, vertexShaderBytes);
+            }
+        }
 
         var quadVertices = new[]
         {
@@ -67,21 +76,41 @@ public sealed class VideoRenderer : IDisposable
             fixed (QuadVertex* vertices = quadVertices)
             {
                 var vertexSubresource = new SubresourceData((IntPtr)vertices, 0, 0);
-                _deviceManager.Device.CreateBuffer(vertexBufferDescription, vertexSubresource, out _vertexBuffer).CheckError();
+                _vertexBuffer = Direct3D11Interop.CreateBuffer(_deviceManager.Device, vertexBufferDescription, &vertexSubresource);
             }
         }
 
-        _samplerState = _deviceManager.Device.CreateSamplerState(new SamplerDescription(
-            Filter.MinMagMipLinear,
-            TextureAddressMode.Clamp,
-            TextureAddressMode.Clamp,
-            TextureAddressMode.Clamp,
-            0.0f,
-            1,
-            ComparisonFunction.Never,
-            new Color4(0f, 0f, 0f, 0f),
-            0.0f,
-            float.MaxValue));
+        _samplerState = Direct3D11Interop.CreateSamplerState(
+            _deviceManager.Device,
+            new SamplerDescription
+            {
+                Filter = Filter.MinMagMipLinear,
+                AddressU = TextureAddressMode.Clamp,
+                AddressV = TextureAddressMode.Clamp,
+                AddressW = TextureAddressMode.Clamp,
+                MipLodBias = 0.0f,
+                MaxAnisotropy = 1,
+                ComparisonFunc = ComparisonFunction.Never,
+                BorderColorR = 0f,
+                BorderColorG = 0f,
+                BorderColorB = 0f,
+                BorderColorA = 0f,
+                MinLod = 0.0f,
+                MaxLod = float.MaxValue,
+            });
+
+        var transformBufferDescription = new BufferDescription(
+            (uint)Marshal.SizeOf<TransformConstants>(),
+            BindFlags.ConstantBuffer,
+            ResourceUsage.Default,
+            CpuAccessFlags.None,
+            ResourceOptionFlags.None,
+            0);
+
+        unsafe
+        {
+            _transformBuffer = Direct3D11Interop.CreateBuffer(_deviceManager.Device, transformBufferDescription, (SubresourceData*)null);
+        }
     }
 
     public double CurrentFramesPerSecond => _currentFramesPerSecond;
@@ -93,25 +122,31 @@ public sealed class VideoRenderer : IDisposable
             UploadFrame(frame);
         }
 
-        if (_frameTexture is null || _frameShaderResourceView is null)
+        if (_frameTexture == IntPtr.Zero || _frameShaderResourceView == IntPtr.Zero)
         {
             return;
         }
 
         _panelHost.EnsureSwapChain(_frameWidth, _frameHeight);
 
-        var context = _deviceManager.Context;
-        context.ClearRenderTargetView(_panelHost.RenderTargetView, new Color4(0.0f, 0.0f, 0.0f, 1.0f));
-        context.RSSetViewports([CreateFullViewport()]);
-        context.OMSetRenderTargets([_panelHost.RenderTargetView], null);
-        context.PSSetShaderResources(0, [_frameShaderResourceView]);
-        context.PSSetSamplers(0, [_samplerState]);
-        context.IASetVertexBuffers(0, [_vertexBuffer], [_vertexStride], [0]);
-        context.IASetPrimitiveTopology(PrimitiveTopology.TriangleStrip);
-        context.IASetInputLayout(_inputLayout);
-        context.VSSetShader(_vertexShader);
-        context.PSSetShader(_pixelShader);
-        context.Draw(4, 0);
+        unsafe
+        {
+            var clearColor = stackalloc float[] { 0.0f, 0.0f, 0.0f, 1.0f };
+            var context = _deviceManager.Context;
+            Direct3D11Interop.ClearRenderTargetView(context, _panelHost.RenderTargetView, clearColor);
+            Direct3D11Interop.RSSetViewports(context, CreateFullViewport());
+            Direct3D11Interop.OMSetRenderTargets(context, _panelHost.RenderTargetView);
+            Direct3D11Interop.PSSetShaderResources(context, 0, _frameShaderResourceView);
+            Direct3D11Interop.PSSetSamplers(context, 0, _samplerState);
+            Direct3D11Interop.IASetVertexBuffers(context, 0, _vertexBuffer, _vertexStride, 0);
+            Direct3D11Interop.IASetPrimitiveTopology(context, PrimitiveTopology.TriangleStrip);
+            Direct3D11Interop.IASetInputLayout(context, _inputLayout);
+            UpdateTransformBuffer();
+            Direct3D11Interop.VSSetConstantBuffers(context, 0, _transformBuffer);
+            Direct3D11Interop.VSSetShader(context, _vertexShader);
+            Direct3D11Interop.PSSetShader(context, _pixelShader);
+            Direct3D11Interop.Draw(context, 4, 0);
+        }
 
         _panelHost.Present();
         UpdatePresentedFramesPerSecond();
@@ -119,39 +154,54 @@ public sealed class VideoRenderer : IDisposable
 
     public void Dispose()
     {
-        _frameShaderResourceView?.Dispose();
-        _frameTexture?.Dispose();
-        _samplerState.Dispose();
-        _vertexBuffer.Dispose();
-        _inputLayout.Dispose();
-        _pixelShader.Dispose();
-        _vertexShader.Dispose();
+        Direct3D11Interop.Release(ref _frameShaderResourceView);
+        Direct3D11Interop.Release(ref _frameTexture);
+
+        var transformBuffer = _transformBuffer;
+        Direct3D11Interop.Release(ref transformBuffer);
+
+        var samplerState = _samplerState;
+        Direct3D11Interop.Release(ref samplerState);
+
+        var vertexBuffer = _vertexBuffer;
+        Direct3D11Interop.Release(ref vertexBuffer);
+
+        var inputLayout = _inputLayout;
+        Direct3D11Interop.Release(ref inputLayout);
+
+        var pixelShader = _pixelShader;
+        Direct3D11Interop.Release(ref pixelShader);
+
+        var vertexShader = _vertexShader;
+        Direct3D11Interop.Release(ref vertexShader);
     }
 
     private void UploadFrame(VideoFrame frame)
     {
         var width = (uint)frame.Width;
         var height = (uint)frame.Height;
-        var needsTextureResize = _frameTexture is null || _frameWidth != width || _frameHeight != height;
+        var needsTextureResize = _frameTexture == IntPtr.Zero || _frameWidth != width || _frameHeight != height;
 
         if (needsTextureResize)
         {
-            _frameShaderResourceView?.Dispose();
-            _frameTexture?.Dispose();
+            Direct3D11Interop.Release(ref _frameShaderResourceView);
+            Direct3D11Interop.Release(ref _frameTexture);
 
-            _frameTexture = _deviceManager.Device.CreateTexture2D(new Texture2DDescription
-            {
-                Width = width,
-                Height = height,
-                MipLevels = 1,
-                ArraySize = 1,
-                Format = Format.R8G8B8A8_UNorm,
-                SampleDescription = new SampleDescription(1, 0),
-                Usage = ResourceUsage.Default,
-                BindFlags = BindFlags.ShaderResource,
-            });
+            _frameTexture = Direct3D11Interop.CreateTexture2D(
+                _deviceManager.Device,
+                new Texture2DDescription
+                {
+                    Width = width,
+                    Height = height,
+                    MipLevels = 1,
+                    ArraySize = 1,
+                    Format = DxgiFormat.R8G8B8A8UNorm,
+                    SampleDescription = new SampleDescription(1, 0),
+                    Usage = ResourceUsage.Default,
+                    BindFlags = BindFlags.ShaderResource,
+                });
 
-            _frameShaderResourceView = _deviceManager.Device.CreateShaderResourceView(_frameTexture, null);
+            _frameShaderResourceView = Direct3D11Interop.CreateShaderResourceView(_deviceManager.Device, _frameTexture);
             _frameWidth = width;
             _frameHeight = height;
             _lastUploadedFrameIndex = -1;
@@ -169,7 +219,7 @@ public sealed class VideoRenderer : IDisposable
         {
             fixed (byte* pixelData = frame.Data)
             {
-                _deviceManager.Context.UpdateSubresource(_frameTexture!, 0, null, new IntPtr(pixelData), (uint)frame.Stride, 0);
+                Direct3D11Interop.UpdateSubresource(_deviceManager.Context, _frameTexture, 0, pixelData, (uint)frame.Stride, 0);
             }
         }
 
@@ -179,7 +229,34 @@ public sealed class VideoRenderer : IDisposable
 
     private Viewport CreateFullViewport()
     {
-        return new Viewport(0, 0, _panelHost.BufferWidth, _panelHost.BufferHeight);
+        return new Viewport(0, 0, Math.Max(1u, _panelHost.BufferWidth), Math.Max(1u, _panelHost.BufferHeight));
+    }
+
+    private void UpdateTransformBuffer()
+    {
+        var scaleX = 1.0f;
+        var scaleY = 1.0f;
+
+        if (_panelHost.BufferWidth > 0 && _panelHost.BufferHeight > 0 && _frameWidth > 0 && _frameHeight > 0)
+        {
+            var sourceAspect = (float)_frameWidth / _frameHeight;
+            var targetAspect = (float)_panelHost.BufferWidth / _panelHost.BufferHeight;
+
+            if (targetAspect > sourceAspect)
+            {
+                scaleX = sourceAspect / targetAspect;
+            }
+            else
+            {
+                scaleY = targetAspect / sourceAspect;
+            }
+        }
+
+        var transform = new TransformConstants(scaleX, scaleY);
+        unsafe
+        {
+            Direct3D11Interop.UpdateSubresource(_deviceManager.Context, _transformBuffer, 0, &transform, 0, 0);
+        }
     }
 
     private void UpdatePresentedFramesPerSecond()
@@ -214,7 +291,7 @@ public sealed class VideoRenderer : IDisposable
                     IntPtr.Zero,
                     entryPoint,
                     target,
-                    D3DCOMPILE_OPTIMIZATION_LEVEL3,
+                    D3DCompileOptimizationLevel3,
                     0,
                     out var shaderBlobPointer,
                     out var errorBlobPointer);
@@ -275,7 +352,7 @@ public sealed class VideoRenderer : IDisposable
         }
     }
 
-    private const uint D3DCOMPILE_OPTIMIZATION_LEVEL3 = 1u << 15;
+    private const uint D3DCompileOptimizationLevel3 = 1u << 15;
 
     [DllImport("d3dcompiler_47.dll", EntryPoint = "D3DCompile", CallingConvention = CallingConvention.StdCall, ExactSpelling = true)]
     private static extern unsafe int D3DCompile(
@@ -329,6 +406,26 @@ public sealed class VideoRenderer : IDisposable
         public float V { get; }
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private readonly struct TransformConstants
+    {
+        public TransformConstants(float scaleX, float scaleY)
+        {
+            ScaleX = scaleX;
+            ScaleY = scaleY;
+            Padding0 = 0f;
+            Padding1 = 0f;
+        }
+
+        public float ScaleX { get; }
+
+        public float ScaleY { get; }
+
+        public float Padding0 { get; }
+
+        public float Padding1 { get; }
+    }
+
     private const string VertexShaderSource = """
 struct VSInput
 {
@@ -342,10 +439,16 @@ struct PSInput
     float2 texCoord : TEXCOORD0;
 };
 
+cbuffer TransformBuffer : register(b0)
+{
+    float2 contentScale;
+    float2 _padding;
+}
+
 PSInput VSMain(VSInput input)
 {
     PSInput output;
-    output.position = float4(input.position.xy, 0.0f, 1.0f);
+    output.position = float4(input.position.xy * contentScale, 0.0f, 1.0f);
     output.texCoord = input.texCoord;
     return output;
 }
