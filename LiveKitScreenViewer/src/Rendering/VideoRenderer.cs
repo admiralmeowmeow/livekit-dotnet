@@ -16,6 +16,7 @@ public sealed class VideoRenderer : IDisposable
     private readonly IntPtr _transformBuffer;
     private readonly IntPtr _samplerState;
     private readonly uint _vertexStride = (uint)Marshal.SizeOf<QuadVertex>();
+    private readonly ContentScaleMode _contentScaleMode = ContentScaleMode.Fit;
     private IntPtr _frameTexture;
     private IntPtr _frameShaderResourceView;
     private uint _frameWidth;
@@ -111,9 +112,15 @@ public sealed class VideoRenderer : IDisposable
         {
             _transformBuffer = Direct3D11Interop.CreateBuffer(_deviceManager.Device, transformBufferDescription, (SubresourceData*)null);
         }
+
+        UpdateTransformBufferIdentity();
     }
 
     public double CurrentFramesPerSecond => _currentFramesPerSecond;
+
+    public string ContentScaleLabel => _contentScaleMode == ContentScaleMode.Fill
+        ? "aspect fill"
+        : "aspect fit";
 
     public void Render(VideoFrame? frame)
     {
@@ -134,14 +141,14 @@ public sealed class VideoRenderer : IDisposable
             var clearColor = stackalloc float[] { 0.0f, 0.0f, 0.0f, 1.0f };
             var context = _deviceManager.Context;
             Direct3D11Interop.ClearRenderTargetView(context, _panelHost.RenderTargetView, clearColor);
-            Direct3D11Interop.RSSetViewports(context, CreateFullViewport());
+            Direct3D11Interop.RSSetViewports(context, CreateContentViewport());
             Direct3D11Interop.OMSetRenderTargets(context, _panelHost.RenderTargetView);
             Direct3D11Interop.PSSetShaderResources(context, 0, _frameShaderResourceView);
             Direct3D11Interop.PSSetSamplers(context, 0, _samplerState);
             Direct3D11Interop.IASetVertexBuffers(context, 0, _vertexBuffer, _vertexStride, 0);
             Direct3D11Interop.IASetPrimitiveTopology(context, PrimitiveTopology.TriangleStrip);
             Direct3D11Interop.IASetInputLayout(context, _inputLayout);
-            UpdateTransformBuffer();
+            UpdateTransformBufferIdentity();
             Direct3D11Interop.VSSetConstantBuffers(context, 0, _transformBuffer);
             Direct3D11Interop.VSSetShader(context, _vertexShader);
             Direct3D11Interop.PSSetShader(context, _pixelShader);
@@ -181,7 +188,6 @@ public sealed class VideoRenderer : IDisposable
         var width = (uint)frame.Width;
         var height = (uint)frame.Height;
         var needsTextureResize = _frameTexture == IntPtr.Zero || _frameWidth != width || _frameHeight != height;
-
         if (needsTextureResize)
         {
             Direct3D11Interop.Release(ref _frameShaderResourceView);
@@ -227,32 +233,54 @@ public sealed class VideoRenderer : IDisposable
         _lastUploadedFrameSource = frame.Source;
     }
 
-    private Viewport CreateFullViewport()
+    private Viewport CreateContentViewport()
     {
-        return new Viewport(0, 0, Math.Max(1u, _panelHost.BufferWidth), Math.Max(1u, _panelHost.BufferHeight));
-    }
+        var targetWidth = Math.Max(1u, _panelHost.BufferWidth);
+        var targetHeight = Math.Max(1u, _panelHost.BufferHeight);
 
-    private void UpdateTransformBuffer()
-    {
-        var scaleX = 1.0f;
-        var scaleY = 1.0f;
-
-        if (_panelHost.BufferWidth > 0 && _panelHost.BufferHeight > 0 && _frameWidth > 0 && _frameHeight > 0)
+        if (_frameWidth == 0 || _frameHeight == 0)
         {
-            var sourceAspect = (float)_frameWidth / _frameHeight;
-            var targetAspect = (float)_panelHost.BufferWidth / _panelHost.BufferHeight;
+            return new Viewport(0, 0, targetWidth, targetHeight);
+        }
 
+        var sourceAspect = (float)_frameWidth / _frameHeight;
+        var targetAspect = (float)targetWidth / targetHeight;
+
+        float viewportWidth;
+        float viewportHeight;
+
+        if (_contentScaleMode == ContentScaleMode.Fill)
+        {
             if (targetAspect > sourceAspect)
             {
-                scaleX = sourceAspect / targetAspect;
+                viewportWidth = targetWidth;
+                viewportHeight = viewportWidth / sourceAspect;
             }
             else
             {
-                scaleY = targetAspect / sourceAspect;
+                viewportHeight = targetHeight;
+                viewportWidth = viewportHeight * sourceAspect;
             }
         }
+        else if (targetAspect > sourceAspect)
+        {
+            viewportHeight = targetHeight;
+            viewportWidth = viewportHeight * sourceAspect;
+        }
+        else
+        {
+            viewportWidth = targetWidth;
+            viewportHeight = viewportWidth / sourceAspect;
+        }
 
-        var transform = new TransformConstants(scaleX, scaleY);
+        var offsetX = (targetWidth - viewportWidth) * 0.5f;
+        var offsetY = (targetHeight - viewportHeight) * 0.5f;
+        return new Viewport(offsetX, offsetY, viewportWidth, viewportHeight);
+    }
+
+    private void UpdateTransformBufferIdentity()
+    {
+        var transform = new TransformConstants(1.0f, 1.0f);
         unsafe
         {
             Direct3D11Interop.UpdateSubresource(_deviceManager.Context, _transformBuffer, 0, &transform, 0, 0);
@@ -387,7 +415,7 @@ public sealed class VideoRenderer : IDisposable
     }
 
     [StructLayout(LayoutKind.Sequential)]
-    private readonly struct QuadVertex
+    private struct QuadVertex
     {
         public QuadVertex(float x, float y, float u, float v)
         {
@@ -397,17 +425,17 @@ public sealed class VideoRenderer : IDisposable
             V = v;
         }
 
-        public float X { get; }
+        public float X;
 
-        public float Y { get; }
+        public float Y;
 
-        public float U { get; }
+        public float U;
 
-        public float V { get; }
+        public float V;
     }
 
     [StructLayout(LayoutKind.Sequential)]
-    private readonly struct TransformConstants
+    private struct TransformConstants
     {
         public TransformConstants(float scaleX, float scaleY)
         {
@@ -417,13 +445,13 @@ public sealed class VideoRenderer : IDisposable
             Padding1 = 0f;
         }
 
-        public float ScaleX { get; }
+        public float ScaleX;
 
-        public float ScaleY { get; }
+        public float ScaleY;
 
-        public float Padding0 { get; }
+        public float Padding0;
 
-        public float Padding1 { get; }
+        public float Padding1;
     }
 
     private const string VertexShaderSource = """
@@ -463,4 +491,10 @@ float4 PSMain(float4 position : SV_POSITION, float2 texCoord : TEXCOORD0) : SV_T
     return sourceTexture.Sample(sourceSampler, texCoord);
 }
 """;
+}
+
+public enum ContentScaleMode
+{
+    Fit,
+    Fill,
 }

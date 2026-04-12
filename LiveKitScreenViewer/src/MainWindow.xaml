@@ -43,6 +43,8 @@
                     <StackPanel Spacing="2">
                         <TextBlock x:Name="BackendText" Text="Backend: initializing" />
                         <TextBlock x:Name="FpsText" Text="Render FPS: 0.0" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <TextBlock x:Name="ReceiveFpsText" Text="Receive FPS: 0.0" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <TextBlock x:Name="FrameAgeText" Text="Frame Age: 0 ms" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                     </StackPanel>
                 </Border>
             </Grid>

@@ -26,6 +26,8 @@ public sealed partial class VideoView : UserControl, IDisposable
 
     public double CurrentRenderFps => _renderer?.CurrentFramesPerSecond ?? 0;
 
+    public string CurrentContentScaleLabel => _renderer?.ContentScaleLabel ?? "aspect fill";
+
     public VideoFramePool FramePool => _framePool;
 
     public bool NeedsSyntheticFrame => _frameInbox.NeedsSyntheticFrame();

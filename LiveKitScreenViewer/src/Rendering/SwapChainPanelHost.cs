@@ -96,9 +96,8 @@ public sealed class SwapChainPanelHost : IDisposable
 
     private (uint Width, uint Height) GetPanelPixelSize(uint fallbackWidth, uint fallbackHeight)
     {
-        var scale = _panel.XamlRoot?.RasterizationScale ?? 1.0;
-        var width = (uint)Math.Max(1, (int)Math.Round(_panel.ActualWidth * scale));
-        var height = (uint)Math.Max(1, (int)Math.Round(_panel.ActualHeight * scale));
+        var width = (uint)Math.Max(1, (int)Math.Round(_panel.ActualWidth));
+        var height = (uint)Math.Max(1, (int)Math.Round(_panel.ActualHeight));
 
         if (_panel.ActualWidth <= 0 || _panel.ActualHeight <= 0)
         {

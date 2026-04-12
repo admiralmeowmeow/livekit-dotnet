@@ -12,6 +12,22 @@ internal static unsafe class Direct3D11Interop
     public static readonly Guid IidDxgiFactory2 = new("50c83a1c-e072-4c48-87b0-3630fa36a6d0");
     public static readonly Guid IidD3D11Texture2D = new("6f15aaf2-d208-4e89-9ab4-489535d34f9c");
 
+    // ID3D11DeviceContext inherits ID3D11DeviceChild, so its vtable starts
+    // after IUnknown(3) + ID3D11DeviceChild(4) methods.
+    private const int ContextVsSetConstantBuffersIndex = 7;
+    private const int ContextPsSetShaderResourcesIndex = 8;
+    private const int ContextPsSetShaderIndex = 9;
+    private const int ContextPsSetSamplersIndex = 10;
+    private const int ContextVsSetShaderIndex = 11;
+    private const int ContextDrawIndex = 13;
+    private const int ContextIaSetInputLayoutIndex = 17;
+    private const int ContextIaSetVertexBuffersIndex = 18;
+    private const int ContextIaSetPrimitiveTopologyIndex = 24;
+    private const int ContextOmSetRenderTargetsIndex = 33;
+    private const int ContextRsSetViewportsIndex = 44;
+    private const int ContextUpdateSubresourceIndex = 48;
+    private const int ContextClearRenderTargetViewIndex = 50;
+
     [DllImport("d3d11.dll", ExactSpelling = true)]
     public static extern int D3D11CreateDevice(
         IntPtr adapter,
@@ -32,7 +48,13 @@ internal static unsafe class Direct3D11Interop
             return;
         }
 
-        Marshal.ThrowExceptionForHR(hr, new IntPtr(-1));
+        var exception = Marshal.GetExceptionForHR(hr, new IntPtr(-1));
+        if (exception is not null)
+        {
+            throw new InvalidOperationException($"{operation} failed with HRESULT 0x{hr:X8}: {exception.Message}", exception);
+        }
+
+        throw new InvalidOperationException($"{operation} failed with HRESULT 0x{hr:X8}.");
     }
 
     public static IntPtr QueryInterface(IntPtr instance, Guid iid)
@@ -219,36 +241,36 @@ internal static unsafe class Direct3D11Interop
 
     public static void ClearRenderTargetView(IntPtr context, IntPtr renderTargetView, float* color)
     {
-        ((delegate* unmanaged[Stdcall]<IntPtr, IntPtr, float*, void>)GetVTableEntry(context, 50))(context, renderTargetView, color);
+        ((delegate* unmanaged[Stdcall]<IntPtr, IntPtr, float*, void>)GetVTableEntry(context, ContextClearRenderTargetViewIndex))(context, renderTargetView, color);
     }
 
     public static void RSSetViewports(IntPtr context, Viewport viewport)
     {
-        ((delegate* unmanaged[Stdcall]<IntPtr, uint, Viewport*, void>)GetVTableEntry(context, 44))(context, 1, &viewport);
+        ((delegate* unmanaged[Stdcall]<IntPtr, uint, Viewport*, void>)GetVTableEntry(context, ContextRsSetViewportsIndex))(context, 1, &viewport);
     }
 
     public static void OMSetRenderTargets(IntPtr context, IntPtr renderTargetView)
     {
         IntPtr local = renderTargetView;
-        ((delegate* unmanaged[Stdcall]<IntPtr, uint, IntPtr*, IntPtr, void>)GetVTableEntry(context, 33))(context, 1, &local, IntPtr.Zero);
+        ((delegate* unmanaged[Stdcall]<IntPtr, uint, IntPtr*, IntPtr, void>)GetVTableEntry(context, ContextOmSetRenderTargetsIndex))(context, 1, &local, IntPtr.Zero);
     }
 
     public static void PSSetShaderResources(IntPtr context, uint startSlot, IntPtr shaderResourceView)
     {
         IntPtr local = shaderResourceView;
-        ((delegate* unmanaged[Stdcall]<IntPtr, uint, uint, IntPtr*, void>)GetVTableEntry(context, 8))(context, startSlot, 1, &local);
+        ((delegate* unmanaged[Stdcall]<IntPtr, uint, uint, IntPtr*, void>)GetVTableEntry(context, ContextPsSetShaderResourcesIndex))(context, startSlot, 1, &local);
     }
 
     public static void PSSetSamplers(IntPtr context, uint startSlot, IntPtr samplerState)
     {
         IntPtr local = samplerState;
-        ((delegate* unmanaged[Stdcall]<IntPtr, uint, uint, IntPtr*, void>)GetVTableEntry(context, 10))(context, startSlot, 1, &local);
+        ((delegate* unmanaged[Stdcall]<IntPtr, uint, uint, IntPtr*, void>)GetVTableEntry(context, ContextPsSetSamplersIndex))(context, startSlot, 1, &local);
     }
 
     public static void IASetVertexBuffers(IntPtr context, uint startSlot, IntPtr vertexBuffer, uint stride, uint offset)
     {
         IntPtr local = vertexBuffer;
-        ((delegate* unmanaged[Stdcall]<IntPtr, uint, uint, IntPtr*, uint*, uint*, void>)GetVTableEntry(context, 18))(
+        ((delegate* unmanaged[Stdcall]<IntPtr, uint, uint, IntPtr*, uint*, uint*, void>)GetVTableEntry(context, ContextIaSetVertexBuffersIndex))(
             context,
             startSlot,
             1,
@@ -259,38 +281,38 @@ internal static unsafe class Direct3D11Interop
 
     public static void IASetPrimitiveTopology(IntPtr context, PrimitiveTopology topology)
     {
-        ((delegate* unmanaged[Stdcall]<IntPtr, PrimitiveTopology, void>)GetVTableEntry(context, 24))(context, topology);
+        ((delegate* unmanaged[Stdcall]<IntPtr, PrimitiveTopology, void>)GetVTableEntry(context, ContextIaSetPrimitiveTopologyIndex))(context, topology);
     }
 
     public static void IASetInputLayout(IntPtr context, IntPtr inputLayout)
     {
-        ((delegate* unmanaged[Stdcall]<IntPtr, IntPtr, void>)GetVTableEntry(context, 17))(context, inputLayout);
+        ((delegate* unmanaged[Stdcall]<IntPtr, IntPtr, void>)GetVTableEntry(context, ContextIaSetInputLayoutIndex))(context, inputLayout);
     }
 
     public static void VSSetConstantBuffers(IntPtr context, uint startSlot, IntPtr constantBuffer)
     {
         IntPtr local = constantBuffer;
-        ((delegate* unmanaged[Stdcall]<IntPtr, uint, uint, IntPtr*, void>)GetVTableEntry(context, 7))(context, startSlot, 1, &local);
+        ((delegate* unmanaged[Stdcall]<IntPtr, uint, uint, IntPtr*, void>)GetVTableEntry(context, ContextVsSetConstantBuffersIndex))(context, startSlot, 1, &local);
     }
 
     public static void VSSetShader(IntPtr context, IntPtr vertexShader)
     {
-        ((delegate* unmanaged[Stdcall]<IntPtr, IntPtr, IntPtr, uint, void>)GetVTableEntry(context, 11))(context, vertexShader, IntPtr.Zero, 0);
+        ((delegate* unmanaged[Stdcall]<IntPtr, IntPtr, IntPtr, uint, void>)GetVTableEntry(context, ContextVsSetShaderIndex))(context, vertexShader, IntPtr.Zero, 0);
     }
 
     public static void PSSetShader(IntPtr context, IntPtr pixelShader)
     {
-        ((delegate* unmanaged[Stdcall]<IntPtr, IntPtr, IntPtr, uint, void>)GetVTableEntry(context, 9))(context, pixelShader, IntPtr.Zero, 0);
+        ((delegate* unmanaged[Stdcall]<IntPtr, IntPtr, IntPtr, uint, void>)GetVTableEntry(context, ContextPsSetShaderIndex))(context, pixelShader, IntPtr.Zero, 0);
     }
 
     public static void Draw(IntPtr context, uint vertexCount, uint startVertexLocation)
     {
-        ((delegate* unmanaged[Stdcall]<IntPtr, uint, uint, void>)GetVTableEntry(context, 13))(context, vertexCount, startVertexLocation);
+        ((delegate* unmanaged[Stdcall]<IntPtr, uint, uint, void>)GetVTableEntry(context, ContextDrawIndex))(context, vertexCount, startVertexLocation);
     }
 
     public static void UpdateSubresource(IntPtr context, IntPtr resource, uint subresource, void* data, uint rowPitch, uint depthPitch)
     {
-        ((delegate* unmanaged[Stdcall]<IntPtr, IntPtr, uint, IntPtr, void*, uint, uint, void>)GetVTableEntry(context, 48))(
+        ((delegate* unmanaged[Stdcall]<IntPtr, IntPtr, uint, IntPtr, void*, uint, uint, void>)GetVTableEntry(context, ContextUpdateSubresourceIndex))(
             context,
             resource,
             subresource,

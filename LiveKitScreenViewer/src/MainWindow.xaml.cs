@@ -163,6 +163,8 @@ public sealed partial class MainWindow : Window
     private void UpdateRenderStats()
     {
         FpsText.Text = $"Render FPS: {ViewerSurface.CurrentRenderFps:F1}";
-        FeedStatusText.Text = $"Content: {ViewerSurface.CurrentContentLabel} | aspect fit enabled";
+        ReceiveFpsText.Text = $"Receive FPS: {_liveKitFrameBridge.CurrentReceiveFps:F1}";
+        FrameAgeText.Text = $"Frame Age: {_liveKitFrameBridge.CurrentFrameAgeMilliseconds:F0} ms";
+        FeedStatusText.Text = $"Content: {ViewerSurface.CurrentContentLabel} | {ViewerSurface.CurrentContentScaleLabel} enabled";
     }
 }
