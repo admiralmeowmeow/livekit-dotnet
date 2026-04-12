@@ -1,0 +1,16 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="LiveKitD3D11Viewer.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:LiveKitD3D11Viewer.Controls"
+    Title="LiveKitD3D11Viewer">
+
+    <Window.SystemBackdrop>
+        <MicaBackdrop />
+    </Window.SystemBackdrop>
+
+    <Grid Background="#FF000000">
+        <controls:VideoView x:Name="ViewerSurface" />
+    </Grid>
+</Window>
