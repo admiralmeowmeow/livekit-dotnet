@@ -36,6 +36,7 @@ internal static class DisplayCatalog
             var description = $"{info.szDevice} | {bounds.Width} x {bounds.Height} @ {refreshRate} Hz";
 
             displays.Add(new DisplayOption(
+                MonitorHandle: monitor,
                 ScreenDeviceName: info.szDevice,
                 DisplayName: displayName,
                 Description: description,
@@ -144,6 +145,7 @@ internal static class DisplayCatalog
 }
 
 public sealed record DisplayOption(
+    IntPtr MonitorHandle,
     string ScreenDeviceName,
     string DisplayName,
     string Description,

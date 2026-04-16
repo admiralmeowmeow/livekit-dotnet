@@ -16,6 +16,7 @@ public sealed partial class MainWindow : Window
 {
     private readonly AppOptions _options;
     private readonly List<DisplayOption> _displayOptions;
+    private readonly DispatcherTimer _statsTimer;
     private HostedLiveKitServer? _hostedServer;
     private LocalViewerHost? _viewerHost;
     private LiveKitFfiClient? _ffiClient;
@@ -34,6 +35,12 @@ public sealed partial class MainWindow : Window
         Closed += MainWindow_Closed;
         _options = AppOptions.FromEnvironment(Environment.GetCommandLineArgs().Skip(1).ToArray());
         _displayOptions = DisplayCatalog.GetActiveDisplays().ToList();
+        _statsTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(250),
+        };
+        _statsTimer.Tick += StatsTimer_Tick;
+        _statsTimer.Start();
 
         DisplayRadioButtons.ItemsSource = _displayOptions;
         DisplayRadioButtons.SelectedItem = _displayOptions.FirstOrDefault(option => option.IsPrimary) ?? _displayOptions.FirstOrDefault();
@@ -73,8 +80,9 @@ public sealed partial class MainWindow : Window
         catch (Exception ex)
         {
             await StopSharingCoreAsync();
+            var errorText = BuildExceptionText(ex);
             StatusText.Text = $"Share failed: {ex.Message}";
-            await ShowMessageAsync("Share failed", ex.Message);
+            await ShowMessageAsync("Share failed", errorText);
         }
         finally
         {
@@ -95,6 +103,8 @@ public sealed partial class MainWindow : Window
 
     private async void MainWindow_Closed(object sender, WindowEventArgs args)
     {
+        _statsTimer.Stop();
+        _statsTimer.Tick -= StatsTimer_Tick;
         await StopSharingCoreAsync();
     }
 
@@ -117,6 +127,7 @@ public sealed partial class MainWindow : Window
         _isSharing = true;
         StatusText.Text = $"Streaming {display.DisplayName}.";
         StreamingInfoText.Text = $"Streaming {display.Description} as RGBA at {_options.CaptureFps} fps.";
+        HostStatsText.Text = _publisher.CurrentStatsSummary;
         ViewerLinkButton.Content = _viewerHost.ViewerUrl;
         ViewerLinkButton.IsEnabled = true;
 
@@ -135,6 +146,7 @@ public sealed partial class MainWindow : Window
                 {
                     StatusText.Text = $"Streaming stopped with an error: {ex.Message}";
                     await StopSharingCoreAsync();
+                    await ShowMessageAsync("Streaming stopped", BuildExceptionText(ex));
                     UpdateButtons();
                 });
             }
@@ -190,8 +202,14 @@ public sealed partial class MainWindow : Window
 
         StatusText.Text = "Ready. Select a display and press Share.";
         StreamingInfoText.Text = "No active stream.";
+        HostStatsText.Text = "Host stats: waiting for frames";
         ViewerLinkButton.Content = "Open local viewer";
         ViewerLinkButton.IsEnabled = false;
+    }
+
+    private void StatsTimer_Tick(object? sender, object e)
+    {
+        HostStatsText.Text = _publisher?.CurrentStatsSummary ?? "Host stats: waiting for frames";
     }
 
     private void UpdateButtons()
@@ -223,6 +241,23 @@ public sealed partial class MainWindow : Window
         };
 
         await dialog.ShowAsync();
+    }
+
+    private static string BuildExceptionText(Exception exception)
+    {
+        var lines = new List<string>();
+        Exception? current = exception;
+        var depth = 0;
+        while (current is not null && depth < 6)
+        {
+            lines.Add(depth == 0
+                ? $"{current.GetType().Name}: {current.Message}"
+                : $"Inner {depth}: {current.GetType().Name}: {current.Message}");
+            current = current.InnerException;
+            depth++;
+        }
+
+        return string.Join(Environment.NewLine, lines);
     }
 
     private void ViewerLinkButton_Click(object sender, RoutedEventArgs e)

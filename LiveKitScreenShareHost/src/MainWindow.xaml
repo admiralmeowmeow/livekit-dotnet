@@ -56,6 +56,10 @@
                 <TextBlock x:Name="StatusText"
                            Text="Ready. Select a display and press Share."
                            TextWrapping="WrapWholeWords" />
+                <TextBlock x:Name="HostStatsText"
+                           Text="Host stats: waiting for frames"
+                           Opacity="0.78"
+                           TextWrapping="WrapWholeWords" />
 
                 <StackPanel Orientation="Horizontal" Spacing="10">
                     <TextBlock Text="Viewer:"

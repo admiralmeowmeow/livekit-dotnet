@@ -1,5 +1,7 @@
 using LiveKit.Proto;
 using LiveKitScreenShareHost.Capture;
+using System.Diagnostics;
+using System.Text;
 
 namespace LiveKitScreenShareHost.LiveKit;
 
@@ -13,12 +15,32 @@ internal sealed class LiveKitPublisher : IAsyncDisposable
     private OwnedVideoSource? _videoSource;
     private OwnedTrack? _videoTrack;
     private OwnedTrackPublication? _publication;
+    private readonly object _statsLock = new();
+    private readonly RollingMetric _captureMetric = new(256);
+    private readonly RollingMetric _convertMetric = new(256);
+    private readonly RollingMetric _publishMetric = new(256);
+    private readonly RollingMetric _loopMetric = new(256);
+    private string _lastStatsSummary = "Host stats: waiting for frames";
+    private DateTime _lastStatsSampleUtc = DateTime.UtcNow;
+    private int _framesPublishedSinceSample;
+    private double _publishedFramesPerSecond;
 
     public LiveKitPublisher(LiveKitFfiClient ffi, PrimaryScreenCapturer capturer, AppOptions options)
     {
         _ffi = ffi;
         _capturer = capturer;
         _options = options;
+    }
+
+    public string CurrentStatsSummary
+    {
+        get
+        {
+            lock (_statsLock)
+            {
+                return _lastStatsSummary;
+            }
+        }
     }
 
     public async Task StartAsync(string token, CancellationToken cancellationToken)
@@ -98,6 +120,12 @@ internal sealed class LiveKitPublisher : IAsyncDisposable
                     Source = TrackSource.SourceScreenshare,
                     VideoCodec = VideoCodec.H264,
                     Simulcast = false,
+                    PreconnectBuffer = false,
+                    VideoEncoding = new VideoEncoding
+                    {
+                        MaxFramerate = _options.CaptureFps,
+                        MaxBitrate = ComputeTargetBitrate(_capturer.Resolution.Width, _capturer.Resolution.Height, _options.CaptureFps),
+                    },
                 },
             },
         });
@@ -119,11 +147,48 @@ internal sealed class LiveKitPublisher : IAsyncDisposable
 
     public async Task RunUntilCancelledAsync(CancellationToken cancellationToken)
     {
-        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(1000d / _options.CaptureFps));
-
-        while (!cancellationToken.IsCancellationRequested && await timer.WaitForNextTickAsync())
+        if (_capturer.IsFrameDriven)
         {
+            var pacedFrameInterval = TimeSpan.FromSeconds(1d / _options.CaptureFps);
+            var nextPacedFrameUtc = DateTime.UtcNow;
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                PublishSingleFrame();
+
+                nextPacedFrameUtc += pacedFrameInterval;
+                var delay = nextPacedFrameUtc - DateTime.UtcNow;
+                if (delay > TimeSpan.Zero)
+                {
+                    await Task.Delay(delay, cancellationToken);
+                }
+                else if (-delay > pacedFrameInterval)
+                {
+                    nextPacedFrameUtc = DateTime.UtcNow;
+                }
+            }
+
+            return;
+        }
+
+        var frameInterval = TimeSpan.FromSeconds(1d / _options.CaptureFps);
+        var nextFrameUtc = DateTime.UtcNow;
+
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            var delay = nextFrameUtc - DateTime.UtcNow;
+            if (delay > TimeSpan.Zero)
+            {
+                await Task.Delay(delay, cancellationToken);
+            }
+
             PublishSingleFrame();
+            nextFrameUtc += frameInterval;
+
+            var lateness = DateTime.UtcNow - nextFrameUtc;
+            if (lateness > frameInterval)
+            {
+                nextFrameUtc = DateTime.UtcNow;
+            }
         }
     }
 
@@ -163,8 +228,11 @@ internal sealed class LiveKitPublisher : IAsyncDisposable
             throw new InvalidOperationException("Video source has not been initialized.");
         }
 
+        var loopStart = Stopwatch.GetTimestamp();
         using var frame = _capturer.CaptureFrame();
-        using var rgbaFrame = frame.CopyAsRgba();
+        var captureEnd = Stopwatch.GetTimestamp();
+        using var rgbaFrame = frame.CopyAsRgba(_capturer.FramePool);
+        var convertEnd = Stopwatch.GetTimestamp();
         var bufferInfo = new VideoBufferInfo
         {
             Type = VideoBufferType.Rgba,
@@ -186,6 +254,72 @@ internal sealed class LiveKitPublisher : IAsyncDisposable
         });
 
         EnsureResponse(captureResponse.MessageCase == FfiResponse.MessageOneofCase.CaptureVideoFrame, "Expected CaptureVideoFrame response.");
+        var publishEnd = Stopwatch.GetTimestamp();
+        TrackFrame(
+            StopwatchTickHelpers.ToMilliseconds(captureEnd - loopStart),
+            StopwatchTickHelpers.ToMilliseconds(convertEnd - captureEnd),
+            StopwatchTickHelpers.ToMilliseconds(publishEnd - convertEnd),
+            StopwatchTickHelpers.ToMilliseconds(publishEnd - loopStart));
+    }
+
+    private void TrackFrame(double captureMilliseconds, double convertMilliseconds, double publishMilliseconds, double loopMilliseconds)
+    {
+        lock (_statsLock)
+        {
+            _captureMetric.Add(captureMilliseconds);
+            _convertMetric.Add(convertMilliseconds);
+            _publishMetric.Add(publishMilliseconds);
+            _loopMetric.Add(loopMilliseconds);
+            _framesPublishedSinceSample++;
+
+            var now = DateTime.UtcNow;
+            var elapsed = now - _lastStatsSampleUtc;
+            if (elapsed.TotalMilliseconds >= 250)
+            {
+                _publishedFramesPerSecond = _framesPublishedSinceSample / elapsed.TotalSeconds;
+                _framesPublishedSinceSample = 0;
+                _lastStatsSampleUtc = now;
+            }
+
+            _lastStatsSummary = BuildStatsSummary();
+        }
+    }
+
+    private string BuildStatsSummary()
+    {
+        var builder = new StringBuilder();
+        builder.Append("Backend: ")
+            .Append(_capturer.BackendName)
+            .Append(" | Host FPS: ")
+            .Append(_publishedFramesPerSecond.ToString("F1"));
+
+        AppendMetric(builder, "capture", _captureMetric.GetSnapshot());
+        AppendMetric(builder, "convert", _convertMetric.GetSnapshot());
+        AppendMetric(builder, "publish", _publishMetric.GetSnapshot());
+        AppendMetric(builder, "loop", _loopMetric.GetSnapshot());
+        return builder.ToString();
+    }
+
+    private static void AppendMetric(StringBuilder builder, string label, MetricSnapshot snapshot)
+    {
+        if (snapshot.Count == 0)
+        {
+            return;
+        }
+
+        builder.Append(" | ")
+            .Append(label)
+            .Append(' ')
+            .Append(snapshot.Average.ToString("F1"))
+            .Append(" ms avg / ")
+            .Append(snapshot.P95.ToString("F1"))
+            .Append(" p95");
+    }
+
+    private static ulong ComputeTargetBitrate(int width, int height, int fps)
+    {
+        var estimated = width * height * fps * 0.14;
+        return (ulong)Math.Clamp((long)estimated, 8_000_000, 40_000_000);
     }
 
     private static void EnsureResponse(bool condition, string errorMessage)
@@ -193,6 +327,72 @@ internal sealed class LiveKitPublisher : IAsyncDisposable
         if (!condition)
         {
             throw new InvalidOperationException(errorMessage);
+        }
+    }
+
+    private sealed class RollingMetric
+    {
+        private readonly double[] _samples;
+        private int _count;
+        private int _nextIndex;
+
+        public RollingMetric(int capacity)
+        {
+            _samples = new double[capacity];
+        }
+
+        public void Add(double value)
+        {
+            _samples[_nextIndex] = value;
+            _nextIndex = (_nextIndex + 1) % _samples.Length;
+            if (_count < _samples.Length)
+            {
+                _count++;
+            }
+        }
+
+        public MetricSnapshot GetSnapshot()
+        {
+            if (_count == 0)
+            {
+                return default;
+            }
+
+            var values = new double[_count];
+            Array.Copy(_samples, values, _count);
+            Array.Sort(values);
+
+            double sum = 0;
+            for (var index = 0; index < values.Length; index++)
+            {
+                sum += values[index];
+            }
+
+            return new MetricSnapshot(
+                values.Length,
+                sum / values.Length,
+                Percentile(values, 0.95));
+        }
+
+        private static double Percentile(double[] sortedValues, double percentile)
+        {
+            if (sortedValues.Length == 1)
+            {
+                return sortedValues[0];
+            }
+
+            var index = (int)Math.Ceiling((sortedValues.Length - 1) * percentile);
+            return sortedValues[Math.Clamp(index, 0, sortedValues.Length - 1)];
+        }
+    }
+
+    private readonly record struct MetricSnapshot(int Count, double Average, double P95);
+
+    private static class StopwatchTickHelpers
+    {
+        public static double ToMilliseconds(long elapsedTicks)
+        {
+            return elapsedTicks * 1000.0 / Stopwatch.Frequency;
         }
     }
 }
