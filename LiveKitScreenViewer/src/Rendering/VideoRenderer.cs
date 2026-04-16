@@ -8,6 +8,8 @@ namespace LiveKitScreenViewer.Rendering;
 
 public sealed class VideoRenderer : IDisposable
 {
+    private const uint WarpMaxWidth = 1920;
+    private const uint WarpMaxHeight = 1080;
     private readonly DxDeviceManager _deviceManager;
     private readonly SwapChainPanelHost _panelHost;
     private readonly IntPtr _vertexShader;
@@ -27,6 +29,8 @@ public sealed class VideoRenderer : IDisposable
     private IntPtr _activeFrameShaderResourceView;
     private uint _frameWidth;
     private uint _frameHeight;
+    private IntPtr _scaledUploadBuffer;
+    private int _scaledUploadCapacity;
     private long _lastUploadedFrameIndex = -1;
     private VideoFrameSource? _lastUploadedFrameSource;
     private double _currentFramesPerSecond;
@@ -191,6 +195,12 @@ public sealed class VideoRenderer : IDisposable
         Direct3D11Interop.Release(ref _defaultFrameTexture);
         Direct3D11Interop.Release(ref _dynamicFrameShaderResourceView);
         Direct3D11Interop.Release(ref _dynamicFrameTexture);
+        if (_scaledUploadBuffer != IntPtr.Zero)
+        {
+            Marshal.FreeHGlobal(_scaledUploadBuffer);
+            _scaledUploadBuffer = IntPtr.Zero;
+            _scaledUploadCapacity = 0;
+        }
 
         var transformBuffer = _transformBuffer;
         Direct3D11Interop.Release(ref transformBuffer);
@@ -213,8 +223,9 @@ public sealed class VideoRenderer : IDisposable
 
     private bool UploadFrame(VideoFrame frame)
     {
-        var width = (uint)frame.Width;
-        var height = (uint)frame.Height;
+        var sourceWidth = (uint)frame.Width;
+        var sourceHeight = (uint)frame.Height;
+        var (width, height) = GetUploadSize(sourceWidth, sourceHeight);
         var needsTextureResize = _frameWidth != width || _frameHeight != height || _defaultFrameTexture == IntPtr.Zero;
         if (needsTextureResize)
         {
@@ -223,8 +234,7 @@ public sealed class VideoRenderer : IDisposable
             _frameHeight = height;
             _lastUploadedFrameIndex = -1;
             _lastUploadedFrameSource = null;
-            _selectedUploadMode = UploadMode.PendingBenchmark;
-            _benchmarkFramesRemaining = 24;
+            ResetUploadModeSelection();
             _updateSubresourceUploadSamples = 0;
             _updateSubresourceUploadTotalMs = 0;
             _mapUploadSamples = 0;
@@ -244,19 +254,27 @@ public sealed class VideoRenderer : IDisposable
 
         unsafe
         {
-            var pixelData = (byte*)frame.DataPointer;
+            var sourcePixelData = (byte*)frame.DataPointer;
+            byte* pixelData = sourcePixelData;
+            var stride = frame.Stride;
             if (pixelData == null)
             {
                 return false;
             }
 
+            if (width != sourceWidth || height != sourceHeight)
+            {
+                pixelData = DownscaleForWarp(sourcePixelData, frame.Width, frame.Height, (int)width, (int)height);
+                stride = checked((int)width * 4);
+            }
+
             if (uploadMode == UploadMode.MapWriteDiscard)
             {
-                UploadWithMap(pixelData, frame);
+                UploadWithMap(pixelData, (int)height, stride);
             }
             else
             {
-                UploadWithUpdateSubresource(pixelData, frame);
+                UploadWithUpdateSubresource(pixelData, stride);
             }
         }
 
@@ -265,6 +283,19 @@ public sealed class VideoRenderer : IDisposable
         _lastUploadedFrameIndex = frame.FrameIndex;
         _lastUploadedFrameSource = frame.Source;
         return true;
+    }
+
+    private (uint Width, uint Height) GetUploadSize(uint sourceWidth, uint sourceHeight)
+    {
+        if (!_deviceManager.IsWarpFallback || sourceWidth <= WarpMaxWidth && sourceHeight <= WarpMaxHeight)
+        {
+            return (sourceWidth, sourceHeight);
+        }
+
+        var scale = Math.Min((float)WarpMaxWidth / sourceWidth, (float)WarpMaxHeight / sourceHeight);
+        var width = Math.Max(1u, (uint)Math.Round(sourceWidth * scale));
+        var height = Math.Max(1u, (uint)Math.Round(sourceHeight * scale));
+        return (width, height);
     }
 
     private Viewport CreateContentViewport()
@@ -390,15 +421,15 @@ public sealed class VideoRenderer : IDisposable
         _activeFrameShaderResourceView = IntPtr.Zero;
     }
 
-    private unsafe void UploadWithUpdateSubresource(byte* pixelData, VideoFrame frame)
+    private unsafe void UploadWithUpdateSubresource(byte* pixelData, int stride)
     {
         _activeFrameTexture = _defaultFrameTexture;
         _activeFrameShaderResourceView = _defaultFrameShaderResourceView;
-        Direct3D11Interop.UpdateSubresource(_deviceManager.Context, _defaultFrameTexture, 0, pixelData, (uint)frame.Stride, 0);
+        Direct3D11Interop.UpdateSubresource(_deviceManager.Context, _defaultFrameTexture, 0, pixelData, (uint)stride, 0);
         Direct3D11Interop.PSSetShaderResources(_deviceManager.Context, 0, _activeFrameShaderResourceView);
     }
 
-    private unsafe void UploadWithMap(byte* pixelData, VideoFrame frame)
+    private unsafe void UploadWithMap(byte* pixelData, int height, int stride)
     {
         _activeFrameTexture = _dynamicFrameTexture;
         _activeFrameShaderResourceView = _dynamicFrameShaderResourceView;
@@ -408,10 +439,10 @@ public sealed class VideoRenderer : IDisposable
         {
             var sourceRow = pixelData;
             var destinationRow = (byte*)mapped.DataPointer;
-            for (var row = 0; row < frame.Height; row++)
+            for (var row = 0; row < height; row++)
             {
-                Buffer.MemoryCopy(sourceRow, destinationRow, mapped.RowPitch, frame.Stride);
-                sourceRow += frame.Stride;
+                Buffer.MemoryCopy(sourceRow, destinationRow, mapped.RowPitch, stride);
+                sourceRow += stride;
                 destinationRow += mapped.RowPitch;
             }
         }
@@ -443,6 +474,19 @@ public sealed class VideoRenderer : IDisposable
         return (_benchmarkFramesRemaining & 1) == 0
             ? UploadMode.UpdateSubresource
             : UploadMode.MapWriteDiscard;
+    }
+
+    private void ResetUploadModeSelection()
+    {
+        if (_deviceManager.IsWarpFallback)
+        {
+            _selectedUploadMode = UploadMode.UpdateSubresource;
+            _benchmarkFramesRemaining = 0;
+            return;
+        }
+
+        _selectedUploadMode = UploadMode.PendingBenchmark;
+        _benchmarkFramesRemaining = 8;
     }
 
     private void TrackUploadBenchmark(UploadMode uploadMode, double elapsedMilliseconds)
@@ -485,6 +529,45 @@ public sealed class VideoRenderer : IDisposable
             _framesPresentedSinceLastSample = 0;
             _lastFpsSampleUtc = now;
         }
+    }
+
+    private unsafe byte* DownscaleForWarp(byte* sourcePixelData, int sourceWidth, int sourceHeight, int targetWidth, int targetHeight)
+    {
+        var targetStride = checked(targetWidth * 4);
+        var requiredBytes = checked(targetStride * targetHeight);
+        EnsureScaledUploadCapacity(requiredBytes);
+
+        var sourcePixels = (uint*)sourcePixelData;
+        var destinationPixels = (uint*)_scaledUploadBuffer;
+        for (var y = 0; y < targetHeight; y++)
+        {
+            var sourceY = (int)((long)y * sourceHeight / targetHeight);
+            var sourceRow = sourcePixels + (sourceY * sourceWidth);
+            var destinationRow = destinationPixels + (y * targetWidth);
+            for (var x = 0; x < targetWidth; x++)
+            {
+                var sourceX = (int)((long)x * sourceWidth / targetWidth);
+                destinationRow[x] = sourceRow[sourceX];
+            }
+        }
+
+        return (byte*)_scaledUploadBuffer;
+    }
+
+    private void EnsureScaledUploadCapacity(int requiredBytes)
+    {
+        if (_scaledUploadCapacity >= requiredBytes)
+        {
+            return;
+        }
+
+        if (_scaledUploadBuffer != IntPtr.Zero)
+        {
+            Marshal.FreeHGlobal(_scaledUploadBuffer);
+        }
+
+        _scaledUploadBuffer = Marshal.AllocHGlobal(requiredBytes);
+        _scaledUploadCapacity = requiredBytes;
     }
 
     private static byte[] CompileShader(string source, string entryPoint, string target)
