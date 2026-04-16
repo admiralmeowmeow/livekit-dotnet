@@ -1,0 +1,481 @@
+LIVEKITD3D11VIEWER WORKING GUIDE
+
+PURPOSE
+This app joins a LiveKit room as a viewer, subscribes to a remote screenshare video track,
+receives RGBA frames from livekit_ffi, copies those frames into managed memory, and renders
+them into a WinUI SwapChainPanel using Direct3D 11.
+
+If no video frame has arrived yet, the window stays black.
+There is no synthetic fallback feed in this app.
+
+
+END TO END FLOW
+
+1. App starts.
+   File: App.xaml.cs
+   Method: App.OnLaunched
+   What happens:
+   - Creates MainWindow.
+   - Activates the window.
+
+2. Main window is created.
+   File: MainWindow.xaml.cs
+   Method: MainWindow.MainWindow
+   What happens:
+   - Loads XAML.
+   - Creates LiveKitFrameBridge and points it at ViewerSurface.
+   - Hooks Activated and Closed events.
+
+3. Window becomes active.
+   File: MainWindow.xaml.cs
+   Method: MainWindow.OnActivated
+   What happens:
+   - Prevents duplicate startup with _connectionStarted.
+   - Reads runtime config from environment through AppOptions.
+   - Creates LiveKitFfiClient.
+   - Creates LiveKitSubscriber.
+   - Creates a viewer JWT token with LiveKitTokenFactory.
+   - Calls LiveKitSubscriber.StartAsync to connect to LiveKit.
+
+4. Token is created.
+   File: Auth\LiveKitTokenFactory.cs
+   Method: LiveKitTokenFactory.CreateViewerToken
+   What happens:
+   - Builds a JWT for room join.
+   - Sets canPublish = false.
+   - Sets canSubscribe = true.
+   - Signs token using LIVEKIT_API_SECRET.
+
+5. FFI layer starts.
+   File: LiveKit\LiveKitFfiClient.cs
+   Method: LiveKitFfiClient.LiveKitFfiClient
+   What happens:
+   - Resolves livekit_ffi.dll path.
+   - Creates an internal event inbox.
+   - Registers callback for incoming FFI events.
+   - Calls native livekit_ffi_initialize.
+
+6. App connects to LiveKit room.
+   File: LiveKit\LiveKitSubscriber.cs
+   Method: LiveKitSubscriber.StartAsync
+   What happens:
+   - Sends ConnectRequest through FFI.
+   - Waits for matching Connect callback event.
+   - Tracks room and local participant handles.
+   - Checks existing participants for screenshare publications.
+   - Starts background room event loop.
+
+7. Existing screenshares are subscribed.
+   File: LiveKit\LiveKitSubscriber.cs
+   Method: LiveKitSubscriber.SubscribeToExistingScreenshares
+   What happens:
+   - Loops through participants returned by connect result.
+   - Finds video publications where source == screenshare.
+   - Calls SubscribeToScreensharePublication for each one found.
+
+8. New room events are processed.
+   File: LiveKit\LiveKitSubscriber.cs
+   Method: LiveKitSubscriber.RunEventLoopAsync
+   What happens:
+   - Waits for RoomEvent, VideoStreamEvent, or Disconnect.
+   - Sends room events to HandleRoomEventAsync.
+   - Sends video stream events to HandleVideoStreamEvent.
+
+9. Screenshare publication is subscribed.
+   File: LiveKit\LiveKitSubscriber.cs
+   Method: LiveKitSubscriber.SubscribeToScreensharePublication
+   What happens:
+   - Sends SetSubscribedRequest with Subscribe = true.
+   - This tells LiveKit we want the remote publication.
+
+10. Subscribed track is opened as a video stream.
+    File: LiveKit\LiveKitSubscriber.cs
+    Method: LiveKitSubscriber.HandleTrackSubscribedAsync
+    What happens:
+    - Receives TrackSubscribed event.
+    - Ignores non-video tracks.
+    - Calls OpenVideoStreamAsync.
+
+11. Native video stream is created.
+    File: LiveKit\LiveKitSubscriber.cs
+    Method: LiveKitSubscriber.OpenVideoStreamAsync
+    What happens:
+    - Sends EnableRemoteTrackRequest.
+    - Sends NewVideoStreamRequest.
+    - Requests RGBA frames.
+    - Requests normalized stride.
+    - Keeps the returned stream handle in _videoStreamHandles.
+
+12. Incoming frame event arrives from FFI.
+    File: LiveKit\LiveKitSubscriber.cs
+    Method: LiveKitSubscriber.HandleVideoStreamEvent
+    What happens:
+    - Checks that the stream handle belongs to this app.
+    - If event is FrameReceived, calls HandleFrameReceived.
+    - If event is Eos, drops the stream handle.
+
+13. Native RGBA frame is validated and forwarded.
+    File: LiveKit\LiveKitSubscriber.cs
+    Method: LiveKitSubscriber.HandleFrameReceived
+    What happens:
+    - Reads width, height, stride, data pointer, and type from FFI buffer.
+    - Ignores invalid or non-RGBA frames.
+    - Increments local frame counter.
+    - Calls LiveKitFrameBridge.SubmitRgbaFrame.
+    - Drops native owned handle after processing.
+
+14. Native RGBA bytes are copied into managed frame memory.
+    File: LiveKit\LiveKitFrameBridge.cs
+    Method: LiveKitFrameBridge.SubmitRgbaFrame
+    What happens:
+    - Rents a VideoFrame from VideoFramePool.
+    - Copies bytes from native pointer into frame.Data.
+    - Submits the frame to VideoView.
+
+15. Frame object and buffers are reused.
+    File: Frames\VideoFramePool.cs
+    Method: VideoFramePool.Rent
+    What happens:
+    - Reuses a VideoFrame object from ConcurrentBag if available.
+    - Rents a byte[] buffer from ArrayPool<byte>.
+    - Initializes frame metadata.
+
+16. Frame is queued for rendering.
+    File: Controls\VideoView.xaml.cs
+    Method: VideoView.SubmitFrame
+    What happens:
+    - Sends frame into FrameInbox.
+    - Signals RenderWorker that a frame is ready.
+
+17. Inbox keeps only the newest frame.
+    File: Frames\FrameInbox.cs
+    Method: FrameInbox.Submit
+    What happens:
+    - Replaces any older queued frame with the latest frame.
+    - Disposes the older frame if one existed.
+    Why:
+    - Keeps rendering current and avoids building up latency.
+
+18. Background render thread wakes up.
+    File: Rendering\RenderWorker.cs
+    Method: RenderWorker.Run
+    What happens:
+    - Waits on AutoResetEvent.
+    - Pulls latest frame from FrameInbox.
+    - Calls VideoView.RenderFrame(frame).
+    - Disposes the frame after rendering finishes.
+
+19. VideoView owns renderer startup and shutdown.
+    File: Controls\VideoView.xaml.cs
+    Methods:
+    - OnLoaded
+    - RenderFrame
+    - Dispose
+    What happens:
+    - OnLoaded creates DxDeviceManager, SwapChainPanelHost, VideoRenderer, and RenderWorker.
+    - RenderFrame forwards the frame to VideoRenderer.Render.
+    - Dispose shuts everything down and clears queued frames.
+
+20. D3D11 device is created.
+    File: Rendering\DxDeviceManager.cs
+    Method: DxDeviceManager.DxDeviceManager
+    What happens:
+    - Tries hardware D3D11 device first.
+    - Falls back to WARP if hardware creation fails.
+    - Gets DXGI factory for swap chain creation.
+
+21. Swap chain is created and attached to WinUI panel.
+    File: Rendering\SwapChainPanelHost.cs
+    Methods:
+    - EnsureSwapChain
+    - AttachToPanelOnUiThread
+    - CreateRenderTargetView
+    What happens:
+    - Creates composition swap chain when first frame is rendered.
+    - Attaches swap chain to SwapChainPanel on UI thread.
+    - Creates render target view from back buffer.
+    - Resizes swap chain if panel size changes.
+
+22. Frame texture is uploaded to GPU.
+    File: Rendering\VideoRenderer.cs
+    Method: VideoRenderer.UploadFrame
+    What happens:
+    - Checks whether GPU texture must be recreated.
+    - If WARP fallback is active and frame is too large, downscales first.
+    - Uploads RGBA bytes into D3D11 texture with UpdateSubresource.
+
+23. Frame is rendered with aspect-fit.
+    File: Rendering\VideoRenderer.cs
+    Methods:
+    - CreateContentViewport
+    - BindPipeline
+    - Render
+    What happens:
+    - Calculates viewport that preserves source aspect ratio.
+    - Clears target to black.
+    - Binds shaders, sampler, vertex buffer, constant buffer, and frame texture.
+    - Draws a textured full-screen quad into swap chain back buffer.
+    - Presents swap chain.
+
+24. Window closes and resources are released.
+    File: MainWindow.xaml.cs
+    Method: MainWindow.OnClosed
+    What happens:
+    - Cancels subscriber work.
+    - Disposes LiveKitSubscriber.
+    - Disposes LiveKitFfiClient.
+    - Disposes ViewerSurface and renderer resources.
+
+
+FILE AND METHOD MAP
+
+App.xaml.cs
+- App.App
+  Initializes the application object.
+- App.OnLaunched
+  Creates and shows MainWindow.
+
+MainWindow.xaml
+- Declares one VideoView named ViewerSurface inside a black window.
+
+MainWindow.xaml.cs
+- MainWindow.MainWindow
+  Builds the window and wires events.
+- MainWindow.OnActivated
+  Starts LiveKit connection once.
+- MainWindow.OnClosed
+  Stops LiveKit and rendering when the window closes.
+- MainWindow.DisposeLiveKitAsync
+  Cancels and disposes subscriber and FFI client.
+
+AppOptions.cs
+- AppOptions.FromEnvironment
+  Reads room URL, room name, identity, API key, secret, and optional DLL path.
+- AppOptions.ResolveFfiLibraryCandidates
+  Builds list of possible livekit_ffi.dll locations.
+- AppOptions.FindProjectRoot
+  Finds project folder for relative DLL lookup.
+- AppOptions.GetValue
+  Reads env var with fallback value.
+
+Auth\LiveKitTokenFactory.cs
+- LiveKitTokenFactory.CreateViewerToken
+  Creates viewer-only room join token.
+- LiveKitTokenFactory.CreateJoinToken
+  Builds JWT header, payload, and signature.
+- LiveKitTokenFactory.Base64UrlEncode
+  Converts bytes to JWT-safe base64.
+
+LiveKit\LiveKitFfiClient.cs
+- LiveKitFfiClient.LiveKitFfiClient
+  Initializes native FFI and event inbox.
+- LiveKitFfiClient.TrackOwnedHandle
+  Remembers native handle so it can be released later.
+- LiveKitFfiClient.DropOwnedHandle
+  Releases a native handle immediately.
+- LiveKitFfiClient.SendRequest
+  Sends protobuf request bytes into FFI and parses response.
+- LiveKitFfiClient.WaitForEventAsync
+  Waits for matching FFI event from inbox.
+- LiveKitFfiClient.Dispose
+  Releases all tracked native handles and disposes FFI.
+- LiveKitFfiClient.RegisterResolver
+  Tells .NET how to load livekit_ffi.dll.
+- LiveKitFfiClient.HandleFfiEvent
+  Receives raw native callback bytes and enqueues parsed event.
+
+LiveKit\LiveKitSubscriber.cs
+- LiveKitSubscriber.StartAsync
+  Connects to room and starts event loop.
+- LiveKitSubscriber.DisposeAsync
+  Disconnects from room and releases stream handles.
+- LiveKitSubscriber.RunEventLoopAsync
+  Central background loop for room and video events.
+- LiveKitSubscriber.HandleRoomEventAsync
+  Routes individual room events.
+- LiveKitSubscriber.HandleParticipantConnected
+  Tracks participant handle.
+- LiveKitSubscriber.SubscribeToExistingScreenshares
+  Finds already-published screenshares after connect.
+- LiveKitSubscriber.HandleTrackSubscribedAsync
+  Opens video stream for subscribed video track.
+- LiveKitSubscriber.HandleTrackPublishedAsync
+  Detects newly-published screenshare tracks.
+- LiveKitSubscriber.SubscribeToScreensharePublication
+  Sends subscription request for publication.
+- LiveKitSubscriber.OpenVideoStreamAsync
+  Enables remote track and requests RGBA video stream.
+- LiveKitSubscriber.HandleVideoStreamEvent
+  Routes frame and EOS events.
+- LiveKitSubscriber.HandleFrameReceived
+  Validates frame metadata and forwards bytes to frame bridge.
+- LiveKitSubscriber.TrackVideoStreamHandle
+  Stores stream handle for cleanup.
+- LiveKitSubscriber.DropVideoStream
+  Releases one stream handle.
+- LiveKitSubscriber.DropAllVideoStreams
+  Releases every active stream handle.
+- LiveKitSubscriber.EnsureResponse
+  Throws when an expected FFI response is missing.
+
+LiveKit\LiveKitFrameBridge.cs
+- LiveKitFrameBridge.SubmitRgbaFrame
+  Copies native RGBA bytes into managed frame memory and submits frame to VideoView.
+
+Controls\VideoView.xaml
+- Contains one SwapChainPanel inside a black background grid.
+
+Controls\VideoView.xaml.cs
+- VideoView.VideoView
+  Hooks Loaded, Unloaded, and SizeChanged events.
+- VideoView.SubmitFrame
+  Pushes incoming frame into inbox and signals render worker.
+- VideoView.Dispose
+  Stops render worker and releases D3D resources.
+- VideoView.OnLoaded
+  Creates D3D device, panel host, renderer, and render worker.
+- VideoView.OnUnloaded
+  Disposes control resources.
+- VideoView.OnSizeChanged
+  Tells swap chain host to refresh panel size.
+- VideoView.RenderFrame
+  Hands latest frame to VideoRenderer.
+
+Frames\FrameInbox.cs
+- FrameInbox.Submit
+  Keeps only most recent frame.
+- FrameInbox.TakeLatestForRender
+  Returns latest frame and clears slot.
+- FrameInbox.Clear
+  Drops queued frame.
+
+Frames\VideoFrame.cs
+- VideoFrame.Dispose
+  Returns frame to pool.
+- VideoFrame.Initialize
+  Sets byte buffer and metadata for one frame.
+- VideoFrame.DetachData
+  Clears frame and returns byte[] to pool owner.
+
+Frames\VideoFramePool.cs
+- VideoFramePool.Rent
+  Reuses VideoFrame object and byte[] buffer.
+- VideoFramePool.Return
+  Returns byte[] to ArrayPool and frame object to bag.
+
+Rendering\RenderWorker.cs
+- RenderWorker.Start
+  Starts background render thread.
+- RenderWorker.Dispose
+  Stops render thread.
+- RenderWorker.NotifyFrameAvailable
+  Wakes render thread.
+- RenderWorker.Run
+  Pulls latest frame from inbox and renders it.
+
+Rendering\DxDeviceManager.cs
+- DxDeviceManager.DxDeviceManager
+  Creates D3D11 device, immediate context, and DXGI factory.
+- DxDeviceManager.Dispose
+  Releases native D3D/DXGI objects.
+
+Rendering\SwapChainPanelHost.cs
+- SwapChainPanelHost.SwapChainPanelHost
+  Stores panel/device references and caches panel size.
+- SwapChainPanelHost.InvalidatePanelMetrics
+  Refreshes cached panel size.
+- SwapChainPanelHost.EnsureSwapChain
+  Creates or resizes swap chain and render target view.
+- SwapChainPanelHost.Present
+  Presents back buffer to the panel.
+- SwapChainPanelHost.Dispose
+  Releases swap chain resources.
+- SwapChainPanelHost.GetSwapChainSize
+  Chooses swap chain size from panel size or preferred frame size.
+- SwapChainPanelHost.CreateRenderTargetView
+  Creates RTV from swap chain back buffer.
+- SwapChainPanelHost.UpdatePanelMetrics
+  Reads ActualWidth and ActualHeight from panel.
+- SwapChainPanelHost.AttachToPanelOnUiThread
+  Ensures panel attachment happens on UI thread.
+- SwapChainPanelHost.AttachToPanel
+  Uses ISwapChainPanelNative to bind swap chain to panel.
+
+Rendering\VideoRenderer.cs
+- VideoRenderer.VideoRenderer
+  Creates shaders, input layout, vertex buffer, sampler, and transform buffer.
+- VideoRenderer.Render
+  Uploads frame, prepares render state, draws quad, presents.
+- VideoRenderer.Dispose
+  Releases renderer-owned D3D resources.
+- VideoRenderer.UploadFrame
+  Ensures texture exists and uploads RGBA pixels.
+- VideoRenderer.GetUploadSize
+  Chooses source size or downscaled WARP-safe size.
+- VideoRenderer.CreateContentViewport
+  Computes aspect-fit viewport.
+- VideoRenderer.UpdateTransformBufferIdentity
+  Writes constant buffer with identity scale.
+- VideoRenderer.BindPipeline
+  Binds render state and frame texture.
+- VideoRenderer.RecreateFrameTexture
+  Recreates shader-readable texture for incoming frame size.
+- VideoRenderer.UploadWithUpdateSubresource
+  Copies CPU pixel data into GPU texture.
+- VideoRenderer.DownscaleForWarp
+  CPU-downscales very large frames for WARP mode.
+- VideoRenderer.EnsureScaledUploadCapacity
+  Grows temporary CPU buffer for WARP downscale.
+- VideoRenderer.CompileShader
+  Compiles HLSL shader source with D3DCompile.
+- VideoRenderer.CopyBlobBytes
+  Copies shader bytecode from ID3DBlob.
+- VideoRenderer.ReadBlobAsAnsi
+  Reads shader compiler error text.
+
+
+SHORT MENTAL MODEL
+
+Think of the app as 5 layers:
+
+Layer 1: App and Window
+- Starts UI and kicks off connection.
+
+Layer 2: LiveKit connection
+- Builds token.
+- Talks to livekit_ffi.
+- Subscribes to screenshare.
+
+Layer 3: Frame bridge
+- Copies native RGBA bytes into managed VideoFrame objects.
+
+Layer 4: Frame queue and render thread
+- Keeps only latest frame.
+- Renders on background thread.
+
+Layer 5: D3D11 renderer
+- Uploads pixels to GPU texture.
+- Draws textured quad into SwapChainPanel.
+- Preserves aspect ratio.
+
+
+MOST IMPORTANT METHODS TO READ FIRST
+
+If you want fastest understanding, read these in this exact order:
+
+1. App.xaml.cs -> OnLaunched
+2. MainWindow.xaml.cs -> OnActivated
+3. LiveKit\LiveKitSubscriber.cs -> StartAsync
+4. LiveKit\LiveKitSubscriber.cs -> HandleFrameReceived
+5. LiveKit\LiveKitFrameBridge.cs -> SubmitRgbaFrame
+6. Controls\VideoView.xaml.cs -> SubmitFrame
+7. Rendering\RenderWorker.cs -> Run
+8. Rendering\VideoRenderer.cs -> Render
+9. Rendering\SwapChainPanelHost.cs -> EnsureSwapChain and Present
+
+
+ONE SENTENCE SUMMARY
+
+The app connects to LiveKit, subscribes to a remote screenshare, converts incoming RGBA frame events
+into pooled managed frame buffers, sends only the newest frame to a background render thread, uploads
+that frame into a D3D11 texture, and presents it into a WinUI SwapChainPanel with aspect-fit rendering.
