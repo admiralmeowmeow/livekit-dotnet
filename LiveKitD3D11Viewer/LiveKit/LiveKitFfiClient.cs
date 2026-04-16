@@ -23,8 +23,6 @@ internal sealed class LiveKitFfiClient : IDisposable
         RegisterResolver(libraryCandidates);
         _eventInbox = new EventInbox();
         _callback = HandleFfiEvent;
-        // FFI trace/debug logs can flood the event inbox and starve video frame processing.
-        // Keep capture disabled for normal viewer runs so VideoStreamEvent handling stays responsive.
         Native.livekit_ffi_initialize(_callback, captureLogs: false, sdk: "dotnet-screen-viewer", sdkVersion: "0.1.0");
     }
 

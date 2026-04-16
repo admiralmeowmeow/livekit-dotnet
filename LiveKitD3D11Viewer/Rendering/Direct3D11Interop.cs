@@ -12,14 +12,14 @@ internal static unsafe class Direct3D11Interop
     public static readonly Guid IidDxgiFactory2 = new("50c83a1c-e072-4c48-87b0-3630fa36a6d0");
     public static readonly Guid IidD3D11Texture2D = new("6f15aaf2-d208-4e89-9ab4-489535d34f9c");
 
-    // ID3D11DeviceContext inherits ID3D11DeviceChild, so its vtable starts
-    // after IUnknown(3) + ID3D11DeviceChild(4) methods.
     private const int ContextVsSetConstantBuffersIndex = 7;
     private const int ContextPsSetShaderResourcesIndex = 8;
     private const int ContextPsSetShaderIndex = 9;
     private const int ContextPsSetSamplersIndex = 10;
     private const int ContextVsSetShaderIndex = 11;
     private const int ContextDrawIndex = 13;
+    private const int ContextMapIndex = 14;
+    private const int ContextUnmapIndex = 15;
     private const int ContextIaSetInputLayoutIndex = 17;
     private const int ContextIaSetVertexBuffersIndex = 18;
     private const int ContextIaSetPrimitiveTopologyIndex = 24;
@@ -112,10 +112,9 @@ internal static unsafe class Direct3D11Interop
         ThrowIfFailed(hr, "IDXGISwapChain::ResizeBuffers");
     }
 
-    public static void Present(IntPtr swapChain, uint syncInterval, uint flags)
+    public static int TryPresent(IntPtr swapChain, uint syncInterval, uint flags)
     {
-        var hr = ((delegate* unmanaged[Stdcall]<IntPtr, uint, uint, int>)GetVTableEntry(swapChain, 8))(swapChain, syncInterval, flags);
-        ThrowIfFailed(hr, "IDXGISwapChain::Present");
+        return ((delegate* unmanaged[Stdcall]<IntPtr, uint, uint, int>)GetVTableEntry(swapChain, 8))(swapChain, syncInterval, flags);
     }
 
     public static IntPtr GetBuffer(IntPtr swapChain, uint bufferIndex, Guid iid)
@@ -310,6 +309,25 @@ internal static unsafe class Direct3D11Interop
         ((delegate* unmanaged[Stdcall]<IntPtr, uint, uint, void>)GetVTableEntry(context, ContextDrawIndex))(context, vertexCount, startVertexLocation);
     }
 
+    public static MappedSubresource Map(IntPtr context, IntPtr resource, uint subresource, MapType mapType, MapFlags mapFlags)
+    {
+        MappedSubresource mapped;
+        var hr = ((delegate* unmanaged[Stdcall]<IntPtr, IntPtr, uint, MapType, MapFlags, MappedSubresource*, int>)GetVTableEntry(context, ContextMapIndex))(
+            context,
+            resource,
+            subresource,
+            mapType,
+            mapFlags,
+            &mapped);
+        ThrowIfFailed(hr, "ID3D11DeviceContext::Map");
+        return mapped;
+    }
+
+    public static void Unmap(IntPtr context, IntPtr resource, uint subresource)
+    {
+        ((delegate* unmanaged[Stdcall]<IntPtr, IntPtr, uint, void>)GetVTableEntry(context, ContextUnmapIndex))(context, resource, subresource);
+    }
+
     public static void UpdateSubresource(IntPtr context, IntPtr resource, uint subresource, void* data, uint rowPitch, uint depthPitch)
     {
         ((delegate* unmanaged[Stdcall]<IntPtr, IntPtr, uint, IntPtr, void*, uint, uint, void>)GetVTableEntry(context, ContextUpdateSubresourceIndex))(
@@ -364,11 +382,13 @@ internal enum ResourceUsage : uint
 {
     Default = 0,
     Immutable = 1,
+    Dynamic = 2,
 }
 
 internal enum CpuAccessFlags : uint
 {
     None = 0,
+    Write = 0x10000,
 }
 
 internal enum ResourceOptionFlags : uint
@@ -415,6 +435,17 @@ internal enum SwapEffect : uint
 internal enum AlphaMode : uint
 {
     Ignore = 3,
+}
+
+internal enum MapType : uint
+{
+    WriteDiscard = 4,
+}
+
+[Flags]
+internal enum MapFlags : uint
+{
+    None = 0,
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -525,6 +556,14 @@ internal struct Texture2DDescription
     public BindFlags BindFlags;
     public CpuAccessFlags CpuAccessFlags;
     public ResourceOptionFlags MiscFlags;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+internal struct MappedSubresource
+{
+    public IntPtr DataPointer;
+    public uint RowPitch;
+    public uint DepthPitch;
 }
 
 [StructLayout(LayoutKind.Sequential)]

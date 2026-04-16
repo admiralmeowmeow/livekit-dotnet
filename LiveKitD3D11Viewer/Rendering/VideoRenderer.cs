@@ -7,6 +7,8 @@ namespace LiveKitD3D11Viewer.Rendering;
 
 public sealed class VideoRenderer : IDisposable
 {
+    private const uint WarpMaxWidth = 1920;
+    private const uint WarpMaxHeight = 1080;
     private readonly DxDeviceManager _deviceManager;
     private readonly SwapChainPanelHost _panelHost;
     private readonly IntPtr _vertexShader;
@@ -16,16 +18,13 @@ public sealed class VideoRenderer : IDisposable
     private readonly IntPtr _transformBuffer;
     private readonly IntPtr _samplerState;
     private readonly uint _vertexStride = (uint)Marshal.SizeOf<QuadVertex>();
-    private readonly ContentScaleMode _contentScaleMode = ContentScaleMode.Fit;
     private IntPtr _frameTexture;
     private IntPtr _frameShaderResourceView;
     private uint _frameWidth;
     private uint _frameHeight;
+    private IntPtr _scaledUploadBuffer;
+    private int _scaledUploadCapacity;
     private long _lastUploadedFrameIndex = -1;
-    private VideoFrameSource? _lastUploadedFrameSource;
-    private double _currentFramesPerSecond;
-    private int _framesPresentedSinceLastSample;
-    private DateTime _lastFpsSampleUtc = DateTime.UtcNow;
 
     public VideoRenderer(DxDeviceManager deviceManager, SwapChainPanelHost panelHost)
     {
@@ -114,27 +113,23 @@ public sealed class VideoRenderer : IDisposable
         }
 
         UpdateTransformBufferIdentity();
+        BindPipeline();
     }
 
-    public double CurrentFramesPerSecond => _currentFramesPerSecond;
-
-    public string ContentScaleLabel => _contentScaleMode == ContentScaleMode.Fill
-        ? "aspect fill"
-        : "aspect fit";
-
-    public void Render(VideoFrame? frame)
+    public bool Render(VideoFrame frame)
     {
-        if (frame is not null)
+        if (!UploadFrame(frame))
         {
-            UploadFrame(frame);
+            return false;
         }
 
         if (_frameTexture == IntPtr.Zero || _frameShaderResourceView == IntPtr.Zero)
         {
-            return;
+            return false;
         }
 
         _panelHost.EnsureSwapChain(_frameWidth, _frameHeight);
+        BindPipeline();
 
         unsafe
         {
@@ -143,26 +138,23 @@ public sealed class VideoRenderer : IDisposable
             Direct3D11Interop.ClearRenderTargetView(context, _panelHost.RenderTargetView, clearColor);
             Direct3D11Interop.RSSetViewports(context, CreateContentViewport());
             Direct3D11Interop.OMSetRenderTargets(context, _panelHost.RenderTargetView);
-            Direct3D11Interop.PSSetShaderResources(context, 0, _frameShaderResourceView);
-            Direct3D11Interop.PSSetSamplers(context, 0, _samplerState);
-            Direct3D11Interop.IASetVertexBuffers(context, 0, _vertexBuffer, _vertexStride, 0);
-            Direct3D11Interop.IASetPrimitiveTopology(context, PrimitiveTopology.TriangleStrip);
-            Direct3D11Interop.IASetInputLayout(context, _inputLayout);
-            UpdateTransformBufferIdentity();
-            Direct3D11Interop.VSSetConstantBuffers(context, 0, _transformBuffer);
-            Direct3D11Interop.VSSetShader(context, _vertexShader);
-            Direct3D11Interop.PSSetShader(context, _pixelShader);
             Direct3D11Interop.Draw(context, 4, 0);
         }
 
         _panelHost.Present();
-        UpdatePresentedFramesPerSecond();
+        return true;
     }
 
     public void Dispose()
     {
         Direct3D11Interop.Release(ref _frameShaderResourceView);
         Direct3D11Interop.Release(ref _frameTexture);
+        if (_scaledUploadBuffer != IntPtr.Zero)
+        {
+            Marshal.FreeHGlobal(_scaledUploadBuffer);
+            _scaledUploadBuffer = IntPtr.Zero;
+            _scaledUploadCapacity = 0;
+        }
 
         var transformBuffer = _transformBuffer;
         Direct3D11Interop.Release(ref transformBuffer);
@@ -183,54 +175,56 @@ public sealed class VideoRenderer : IDisposable
         Direct3D11Interop.Release(ref vertexShader);
     }
 
-    private void UploadFrame(VideoFrame frame)
+    private bool UploadFrame(VideoFrame frame)
     {
-        var width = (uint)frame.Width;
-        var height = (uint)frame.Height;
-        var needsTextureResize = _frameTexture == IntPtr.Zero || _frameWidth != width || _frameHeight != height;
+        var sourceWidth = (uint)frame.Width;
+        var sourceHeight = (uint)frame.Height;
+        var (width, height) = GetUploadSize(sourceWidth, sourceHeight);
+        var needsTextureResize = _frameWidth != width || _frameHeight != height || _frameTexture == IntPtr.Zero;
         if (needsTextureResize)
         {
-            Direct3D11Interop.Release(ref _frameShaderResourceView);
-            Direct3D11Interop.Release(ref _frameTexture);
-
-            _frameTexture = Direct3D11Interop.CreateTexture2D(
-                _deviceManager.Device,
-                new Texture2DDescription
-                {
-                    Width = width,
-                    Height = height,
-                    MipLevels = 1,
-                    ArraySize = 1,
-                    Format = DxgiFormat.R8G8B8A8UNorm,
-                    SampleDescription = new SampleDescription(1, 0),
-                    Usage = ResourceUsage.Default,
-                    BindFlags = BindFlags.ShaderResource,
-                });
-
-            _frameShaderResourceView = Direct3D11Interop.CreateShaderResourceView(_deviceManager.Device, _frameTexture);
+            RecreateFrameTexture(width, height);
             _frameWidth = width;
             _frameHeight = height;
             _lastUploadedFrameIndex = -1;
-            _lastUploadedFrameSource = null;
         }
 
-        if (!needsTextureResize &&
-            _lastUploadedFrameIndex == frame.FrameIndex &&
-            _lastUploadedFrameSource == frame.Source)
+        if (!needsTextureResize && _lastUploadedFrameIndex == frame.FrameIndex)
         {
-            return;
+            return false;
         }
 
         unsafe
         {
-            fixed (byte* pixelData = frame.Data)
+            fixed (byte* sourcePixelData = frame.Data)
             {
-                Direct3D11Interop.UpdateSubresource(_deviceManager.Context, _frameTexture, 0, pixelData, (uint)frame.Stride, 0);
+                var pixelData = sourcePixelData;
+                var stride = frame.Stride;
+                if (width != sourceWidth || height != sourceHeight)
+                {
+                    pixelData = DownscaleForWarp(sourcePixelData, frame.Width, frame.Height, (int)width, (int)height);
+                    stride = checked((int)width * 4);
+                }
+
+                UploadWithUpdateSubresource(pixelData, stride);
             }
         }
 
         _lastUploadedFrameIndex = frame.FrameIndex;
-        _lastUploadedFrameSource = frame.Source;
+        return true;
+    }
+
+    private (uint Width, uint Height) GetUploadSize(uint sourceWidth, uint sourceHeight)
+    {
+        if (!_deviceManager.IsWarpFallback || sourceWidth <= WarpMaxWidth && sourceHeight <= WarpMaxHeight)
+        {
+            return (sourceWidth, sourceHeight);
+        }
+
+        var scale = Math.Min((float)WarpMaxWidth / sourceWidth, (float)WarpMaxHeight / sourceHeight);
+        var width = Math.Max(1u, (uint)Math.Round(sourceWidth * scale));
+        var height = Math.Max(1u, (uint)Math.Round(sourceHeight * scale));
+        return (width, height);
     }
 
     private Viewport CreateContentViewport()
@@ -249,20 +243,7 @@ public sealed class VideoRenderer : IDisposable
         float viewportWidth;
         float viewportHeight;
 
-        if (_contentScaleMode == ContentScaleMode.Fill)
-        {
-            if (targetAspect > sourceAspect)
-            {
-                viewportWidth = targetWidth;
-                viewportHeight = viewportWidth / sourceAspect;
-            }
-            else
-            {
-                viewportHeight = targetHeight;
-                viewportWidth = viewportHeight * sourceAspect;
-            }
-        }
-        else if (targetAspect > sourceAspect)
+        if (targetAspect > sourceAspect)
         {
             viewportHeight = targetHeight;
             viewportWidth = viewportHeight * sourceAspect;
@@ -287,20 +268,84 @@ public sealed class VideoRenderer : IDisposable
         }
     }
 
-    private void UpdatePresentedFramesPerSecond()
+    private void BindPipeline()
     {
-        _framesPresentedSinceLastSample++;
+        var context = _deviceManager.Context;
+        Direct3D11Interop.PSSetSamplers(context, 0, _samplerState);
+        Direct3D11Interop.IASetVertexBuffers(context, 0, _vertexBuffer, _vertexStride, 0);
+        Direct3D11Interop.IASetPrimitiveTopology(context, PrimitiveTopology.TriangleStrip);
+        Direct3D11Interop.IASetInputLayout(context, _inputLayout);
+        Direct3D11Interop.VSSetConstantBuffers(context, 0, _transformBuffer);
+        Direct3D11Interop.VSSetShader(context, _vertexShader);
+        Direct3D11Interop.PSSetShader(context, _pixelShader);
+        Direct3D11Interop.PSSetShaderResources(context, 0, _frameShaderResourceView);
+    }
 
-        var now = DateTime.UtcNow;
-        var elapsed = now - _lastFpsSampleUtc;
-        if (elapsed.TotalMilliseconds < 250)
+    private void RecreateFrameTexture(uint width, uint height)
+    {
+        Direct3D11Interop.Release(ref _frameShaderResourceView);
+        Direct3D11Interop.Release(ref _frameTexture);
+
+        _frameTexture = Direct3D11Interop.CreateTexture2D(
+            _deviceManager.Device,
+            new Texture2DDescription
+            {
+                Width = width,
+                Height = height,
+                MipLevels = 1,
+                ArraySize = 1,
+                Format = DxgiFormat.R8G8B8A8UNorm,
+                SampleDescription = new SampleDescription(1, 0),
+                Usage = ResourceUsage.Default,
+                BindFlags = BindFlags.ShaderResource,
+                CpuAccessFlags = CpuAccessFlags.None,
+                MiscFlags = ResourceOptionFlags.None,
+            });
+        _frameShaderResourceView = Direct3D11Interop.CreateShaderResourceView(_deviceManager.Device, _frameTexture);
+    }
+
+    private unsafe void UploadWithUpdateSubresource(byte* pixelData, int stride)
+    {
+        Direct3D11Interop.UpdateSubresource(_deviceManager.Context, _frameTexture, 0, pixelData, (uint)stride, 0);
+    }
+
+    private unsafe byte* DownscaleForWarp(byte* sourcePixelData, int sourceWidth, int sourceHeight, int targetWidth, int targetHeight)
+    {
+        var targetStride = checked(targetWidth * 4);
+        var requiredBytes = checked(targetStride * targetHeight);
+        EnsureScaledUploadCapacity(requiredBytes);
+
+        var sourcePixels = (uint*)sourcePixelData;
+        var destinationPixels = (uint*)_scaledUploadBuffer;
+        for (var y = 0; y < targetHeight; y++)
+        {
+            var sourceY = (int)((long)y * sourceHeight / targetHeight);
+            var sourceRow = sourcePixels + (sourceY * sourceWidth);
+            var destinationRow = destinationPixels + (y * targetWidth);
+            for (var x = 0; x < targetWidth; x++)
+            {
+                var sourceX = (int)((long)x * sourceWidth / targetWidth);
+                destinationRow[x] = sourceRow[sourceX];
+            }
+        }
+
+        return (byte*)_scaledUploadBuffer;
+    }
+
+    private void EnsureScaledUploadCapacity(int requiredBytes)
+    {
+        if (_scaledUploadCapacity >= requiredBytes)
         {
             return;
         }
 
-        _currentFramesPerSecond = _framesPresentedSinceLastSample / elapsed.TotalSeconds;
-        _framesPresentedSinceLastSample = 0;
-        _lastFpsSampleUtc = now;
+        if (_scaledUploadBuffer != IntPtr.Zero)
+        {
+            Marshal.FreeHGlobal(_scaledUploadBuffer);
+        }
+
+        _scaledUploadBuffer = Marshal.AllocHGlobal(requiredBytes);
+        _scaledUploadCapacity = requiredBytes;
     }
 
     private static byte[] CompileShader(string source, string entryPoint, string target)
@@ -426,11 +471,8 @@ public sealed class VideoRenderer : IDisposable
         }
 
         public float X;
-
         public float Y;
-
         public float U;
-
         public float V;
     }
 
@@ -446,11 +488,8 @@ public sealed class VideoRenderer : IDisposable
         }
 
         public float ScaleX;
-
         public float ScaleY;
-
         public float Padding0;
-
         public float Padding1;
     }
 
@@ -469,14 +508,14 @@ struct PSInput
 
 cbuffer TransformBuffer : register(b0)
 {
-    float2 contentScale;
+    float2 fitScale;
     float2 _padding;
 }
 
 PSInput VSMain(VSInput input)
 {
     PSInput output;
-    output.position = float4(input.position.xy * contentScale, 0.0f, 1.0f);
+    output.position = float4(input.position.xy * fitScale, 0.0f, 1.0f);
     output.texCoord = input.texCoord;
     return output;
 }
@@ -491,10 +530,4 @@ float4 PSMain(float4 position : SV_POSITION, float2 texCoord : TEXCOORD0) : SV_T
     return sourceTexture.Sample(sourceSampler, texCoord);
 }
 """;
-}
-
-public enum ContentScaleMode
-{
-    Fit,
-    Fill,
 }

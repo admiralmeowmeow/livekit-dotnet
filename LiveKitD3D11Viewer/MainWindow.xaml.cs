@@ -12,7 +12,8 @@ public sealed partial class MainWindow : Window
     private LiveKitFfiClient? _ffiClient;
     private LiveKitSubscriber? _subscriber;
     private CancellationTokenSource? _subscriberCts;
-    private bool _receiverStarted;
+    private bool _connectionStarted;
+    private bool _isClosing;
 
     public MainWindow()
     {
@@ -26,12 +27,12 @@ public sealed partial class MainWindow : Window
 
     private async void OnActivated(object sender, WindowActivatedEventArgs args)
     {
-        if (_receiverStarted)
+        if (_connectionStarted || _isClosing)
         {
             return;
         }
 
-        _receiverStarted = true;
+        _connectionStarted = true;
 
         try
         {
@@ -43,13 +44,21 @@ public sealed partial class MainWindow : Window
         }
         catch
         {
+            await DisposeLiveKitAsync();
         }
     }
 
     private async void OnClosed(object sender, WindowEventArgs args)
     {
+        _isClosing = true;
         Activated -= OnActivated;
         Closed -= OnClosed;
+        await DisposeLiveKitAsync();
+        ViewerSurface.Dispose();
+    }
+
+    private async Task DisposeLiveKitAsync()
+    {
         _subscriberCts?.Cancel();
 
         try
@@ -66,8 +75,10 @@ public sealed partial class MainWindow : Window
         {
         }
 
+        _subscriber = null;
         _subscriberCts?.Dispose();
+        _subscriberCts = null;
         _ffiClient?.Dispose();
-        ViewerSurface.Dispose();
+        _ffiClient = null;
     }
 }

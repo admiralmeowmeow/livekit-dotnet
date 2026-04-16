@@ -12,7 +12,7 @@ public sealed partial class VideoView : UserControl, IDisposable
     private DxDeviceManager? _deviceManager;
     private SwapChainPanelHost? _panelHost;
     private VideoRenderer? _renderer;
-    private RenderLoop? _renderLoop;
+    private RenderWorker? _renderWorker;
     private bool _disposed;
 
     public VideoFramePool FramePool => _framePool;
@@ -34,6 +34,7 @@ public sealed partial class VideoView : UserControl, IDisposable
         }
 
         _frameInbox.Submit(frame);
+        _renderWorker?.NotifyFrameAvailable();
     }
 
     public void Dispose()
@@ -44,7 +45,7 @@ public sealed partial class VideoView : UserControl, IDisposable
         }
 
         _disposed = true;
-        _renderLoop?.Dispose();
+        _renderWorker?.Dispose();
         _renderer?.Dispose();
         _panelHost?.Dispose();
         _deviceManager?.Dispose();
@@ -61,8 +62,8 @@ public sealed partial class VideoView : UserControl, IDisposable
         _deviceManager = new DxDeviceManager();
         _panelHost = new SwapChainPanelHost(SwapChainSurface, _deviceManager);
         _renderer = new VideoRenderer(_deviceManager, _panelHost);
-        _renderLoop = new RenderLoop(DispatcherQueue, _frameInbox, RenderFrame);
-        _renderLoop.Start();
+        _renderWorker = new RenderWorker(_frameInbox, RenderFrame);
+        _renderWorker.Start();
     }
 
     private void OnUnloaded(object sender, RoutedEventArgs e)
@@ -75,7 +76,7 @@ public sealed partial class VideoView : UserControl, IDisposable
         _panelHost?.InvalidatePanelMetrics();
     }
 
-    private void RenderFrame(VideoFrame? latestFrame)
+    private void RenderFrame(VideoFrame latestFrame)
     {
         if (_renderer is null)
         {

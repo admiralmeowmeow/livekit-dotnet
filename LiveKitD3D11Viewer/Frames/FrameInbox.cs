@@ -14,19 +14,12 @@ public sealed class FrameInbox
 
     public VideoFrame? TakeLatestForRender()
     {
-        return RetainForRender(Volatile.Read(ref _latestFrame));
+        return Interlocked.Exchange(ref _latestFrame, null);
     }
 
     public void Clear()
     {
         var frame = Interlocked.Exchange(ref _latestFrame, null);
         frame?.Dispose();
-    }
-
-    private static VideoFrame? RetainForRender(VideoFrame? frame)
-    {
-        return frame is not null && frame.TryAddReference()
-            ? frame
-            : null;
     }
 }
