@@ -40,11 +40,15 @@
                     Padding="12,10"
                     CornerRadius="12"
                     Background="#B0000000">
-                    <StackPanel Spacing="2">
+                    <StackPanel Spacing="4" MaxWidth="460">
                         <TextBlock x:Name="BackendText" Text="Backend: initializing" />
                         <TextBlock x:Name="FpsText" Text="Render FPS: 0.0" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                         <TextBlock x:Name="ReceiveFpsText" Text="Receive FPS: 0.0" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                         <TextBlock x:Name="FrameAgeText" Text="Frame Age: 0 ms" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <TextBlock x:Name="UploadModeText" Text="Upload: benchmarking" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <TextBlock x:Name="FlowText" Text="Flow: waiting for live frames" TextWrapping="WrapWholeWords" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <TextBlock x:Name="CadenceText" Text="Cadence: waiting for live frames" TextWrapping="WrapWholeWords" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <TextBlock x:Name="LatencyText" Text="Latency: waiting for live frames" TextWrapping="WrapWholeWords" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                     </StackPanel>
                 </Border>
             </Grid>

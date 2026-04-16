@@ -165,6 +165,10 @@ public sealed partial class MainWindow : Window
         FpsText.Text = $"Render FPS: {ViewerSurface.CurrentRenderFps:F1}";
         ReceiveFpsText.Text = $"Receive FPS: {_liveKitFrameBridge.CurrentReceiveFps:F1}";
         FrameAgeText.Text = $"Frame Age: {_liveKitFrameBridge.CurrentFrameAgeMilliseconds:F0} ms";
+        UploadModeText.Text = $"Upload: {ViewerSurface.CurrentUploadModeLabel}";
+        FlowText.Text = ViewerSurface.CurrentFlowSummary;
+        CadenceText.Text = _liveKitFrameBridge.CurrentReceiveCadenceSummary;
+        LatencyText.Text = ViewerSurface.CurrentLatencySummary;
         FeedStatusText.Text = $"Content: {ViewerSurface.CurrentContentLabel} | {ViewerSurface.CurrentContentScaleLabel} enabled";
     }
 }

@@ -12,7 +12,8 @@ public enum VideoFrameSource
 public sealed class VideoFrame : IDisposable
 {
     private readonly VideoFramePool _pool;
-    private byte[]? _data;
+    private readonly VideoFrameTimings _timings = new();
+    private VideoFrameBuffer? _buffer;
     private int _byteLength;
     private int _referenceCount;
 
@@ -21,9 +22,11 @@ public sealed class VideoFrame : IDisposable
         _pool = pool;
     }
 
-    public byte[] Data => _data ?? Array.Empty<byte>();
+    public IntPtr DataPointer => _buffer?.Pointer ?? IntPtr.Zero;
 
-    public Span<byte> PixelSpan => Data.AsSpan(0, _byteLength);
+    public unsafe Span<byte> PixelSpan => _buffer is null
+        ? Span<byte>.Empty
+        : new Span<byte>((void*)_buffer.Pointer, _byteLength);
 
     public int ByteLength => _byteLength;
 
@@ -37,20 +40,23 @@ public sealed class VideoFrame : IDisposable
 
     public VideoFrameSource Source { get; private set; }
 
+    public VideoFrameTimings Timings => _timings;
+
     public void Dispose()
     {
         Release();
     }
 
-    internal void Initialize(byte[] data, int byteLength, int width, int height, int stride, long frameIndex, VideoFrameSource source)
+    internal void Initialize(VideoFrameBuffer buffer, int byteLength, int width, int height, int stride, long frameIndex, VideoFrameSource source)
     {
-        _data = data;
+        _buffer = buffer;
         _byteLength = byteLength;
         Width = width;
         Height = height;
         Stride = stride;
         FrameIndex = frameIndex;
         Source = source;
+        _timings.Reset();
         Volatile.Write(ref _referenceCount, 1);
     }
 
@@ -87,16 +93,16 @@ public sealed class VideoFrame : IDisposable
         _pool.Return(this);
     }
 
-    internal byte[]? DetachData()
+    internal VideoFrameBuffer? DetachBuffer()
     {
-        var data = _data;
-        _data = null;
+        var buffer = _buffer;
+        _buffer = null;
         _byteLength = 0;
         Width = 0;
         Height = 0;
         Stride = 0;
         FrameIndex = 0;
         Source = VideoFrameSource.Synthetic;
-        return data;
+        return buffer;
     }
 }

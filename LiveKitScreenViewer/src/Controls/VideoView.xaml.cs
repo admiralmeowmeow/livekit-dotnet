@@ -1,5 +1,6 @@
 using LiveKitScreenViewer.Frames;
 using LiveKitScreenViewer.Rendering;
+using LiveKitScreenViewer.Diagnostics;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 
@@ -9,14 +10,16 @@ public sealed partial class VideoView : UserControl, IDisposable
 {
     private readonly VideoFramePool _framePool = new();
     private readonly FrameInbox _frameInbox = new();
+    private readonly FrameLatencyTracker _latencyTracker = new();
     private DxDeviceManager? _deviceManager;
     private SwapChainPanelHost? _panelHost;
     private VideoRenderer? _renderer;
-    private RenderLoop? _renderLoop;
+    private RenderWorker? _renderWorker;
     private bool _disposed;
     private VideoFrameSource? _lastRenderedSource;
     private int _currentFrameWidth;
     private int _currentFrameHeight;
+    private long _renderedLiveFrameCount;
 
     public event EventHandler<RendererStateChangedEventArgs>? RendererStateChanged;
 
@@ -28,9 +31,17 @@ public sealed partial class VideoView : UserControl, IDisposable
 
     public string CurrentContentScaleLabel => _renderer?.ContentScaleLabel ?? "aspect fill";
 
+    public string CurrentUploadModeLabel => _renderer?.UploadModeLabel ?? "benchmarking";
+
     public VideoFramePool FramePool => _framePool;
 
     public bool NeedsSyntheticFrame => _frameInbox.NeedsSyntheticFrame();
+
+    public string CurrentLatencySummary => _latencyTracker.GetSummaryText();
+
+    public long RenderedLiveFrameCount => Interlocked.Read(ref _renderedLiveFrameCount);
+
+    public string CurrentFlowSummary => _frameInbox.GetLiveFlowSummary(RenderedLiveFrameCount);
 
     public string CurrentContentLabel => _currentFrameWidth <= 0 || _currentFrameHeight <= 0
         ? "No frames yet"
@@ -53,6 +64,7 @@ public sealed partial class VideoView : UserControl, IDisposable
         }
 
         _frameInbox.Submit(frame);
+        _renderWorker?.NotifyFrameAvailable();
     }
 
     public void Dispose()
@@ -63,7 +75,7 @@ public sealed partial class VideoView : UserControl, IDisposable
         }
 
         _disposed = true;
-        _renderLoop?.Dispose();
+        _renderWorker?.Dispose();
         _renderer?.Dispose();
         _panelHost?.Dispose();
         _deviceManager?.Dispose();
@@ -80,8 +92,8 @@ public sealed partial class VideoView : UserControl, IDisposable
         _deviceManager = new DxDeviceManager();
         _panelHost = new SwapChainPanelHost(SwapChainSurface, _deviceManager);
         _renderer = new VideoRenderer(_deviceManager, _panelHost);
-        _renderLoop = new RenderLoop(DispatcherQueue, _frameInbox, RenderFrame);
-        _renderLoop.Start();
+        _renderWorker = new RenderWorker(_frameInbox, RenderFrame);
+        _renderWorker.Start();
 
         RaiseRendererStateChanged("Rendering synthetic fallback frames");
     }
@@ -96,28 +108,39 @@ public sealed partial class VideoView : UserControl, IDisposable
         _panelHost?.InvalidatePanelMetrics();
     }
 
-    private void RenderFrame(VideoFrame? latestFrame)
+    private void RenderFrame(VideoFrame latestFrame)
     {
         if (_renderer is null)
         {
             return;
         }
 
-        if (latestFrame is not null)
+        var rendered = _renderer.Render(latestFrame);
+        if (!rendered)
         {
-            _currentFrameWidth = latestFrame.Width;
-            _currentFrameHeight = latestFrame.Height;
+            return;
         }
 
-        _renderer.Render(latestFrame);
-
-        if (latestFrame is not null)
+        _latencyTracker.RecordPresentedFrame(latestFrame);
+        _currentFrameWidth = latestFrame.Width;
+        _currentFrameHeight = latestFrame.Height;
+        if (latestFrame.Source == VideoFrameSource.LiveKit)
         {
-            UpdateOverlay(latestFrame);
+            Interlocked.Increment(ref _renderedLiveFrameCount);
         }
+        var overlayFrame = new RenderedFrameInfo(
+            latestFrame.Source,
+            latestFrame.Width,
+            latestFrame.Height,
+            latestFrame.FrameIndex);
+
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            UpdateOverlay(overlayFrame);
+        });
     }
 
-    private void UpdateOverlay(VideoFrame frame)
+    private void UpdateOverlay(RenderedFrameInfo frame)
     {
         IdleOverlay.Visibility = Visibility.Collapsed;
         LiveOverlay.Visibility = frame.Source == VideoFrameSource.LiveKit
@@ -148,6 +171,8 @@ public sealed partial class VideoView : UserControl, IDisposable
     {
         RendererStateChanged?.Invoke(this, new RendererStateChangedEventArgs(CurrentBackendLabel, statusText));
     }
+
+    private readonly record struct RenderedFrameInfo(VideoFrameSource Source, int Width, int Height, long FrameIndex);
 
 }
 

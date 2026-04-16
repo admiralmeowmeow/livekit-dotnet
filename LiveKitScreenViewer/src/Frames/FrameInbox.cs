@@ -10,12 +10,21 @@ public sealed class FrameInbox
     private VideoFrame? _latestLiveFrame;
     private long _lastLiveFrameTicks;
     private int _hasEverReceivedLiveFrame;
+    private long _liveFramesSubmitted;
+    private long _liveFramesReplacedBeforeRender;
 
     public void Submit(VideoFrame frame)
     {
+        frame.Timings.MarkFrameEnqueued();
+
         if (frame.Source == VideoFrameSource.LiveKit)
         {
+            Interlocked.Increment(ref _liveFramesSubmitted);
             var replacedLiveFrame = Interlocked.Exchange(ref _latestLiveFrame, frame);
+            if (replacedLiveFrame is not null)
+            {
+                Interlocked.Increment(ref _liveFramesReplacedBeforeRender);
+            }
             replacedLiveFrame?.Dispose();
             Interlocked.Exchange(ref _lastLiveFrameTicks, DateTime.UtcNow.Ticks);
             Interlocked.Exchange(ref _hasEverReceivedLiveFrame, 1);
@@ -28,7 +37,7 @@ public sealed class FrameInbox
 
     public VideoFrame? TakeLatestForRender()
     {
-        var latestLiveFrame = RetainForRender(Volatile.Read(ref _latestLiveFrame));
+        var latestLiveFrame = Interlocked.Exchange(ref _latestLiveFrame, null);
 
         if (HasRecentLiveFrame())
         {
@@ -37,22 +46,27 @@ public sealed class FrameInbox
 
         if (latestLiveFrame is not null && HasEverReceivedLiveFrame() && !HasTimedOutForFallback())
         {
-            return latestLiveFrame;
+            latestLiveFrame.Dispose();
+            return null;
         }
 
         latestLiveFrame?.Dispose();
-        return RetainForRender(Volatile.Read(ref _latestSyntheticFrame));
+        return Interlocked.Exchange(ref _latestSyntheticFrame, null);
     }
 
     public bool NeedsSyntheticFrame()
     {
-        var latestLiveFrame = Volatile.Read(ref _latestLiveFrame);
-        if (latestLiveFrame is null)
+        if (HasRecentLiveFrame())
         {
-            return true;
+            return false;
         }
 
-        return !HasRecentLiveFrame() && HasTimedOutForFallback();
+        if (HasEverReceivedLiveFrame() && !HasTimedOutForFallback())
+        {
+            return false;
+        }
+
+        return true;
     }
 
     public bool HasRecentLiveFrame()
@@ -76,6 +90,22 @@ public sealed class FrameInbox
 
         Interlocked.Exchange(ref _lastLiveFrameTicks, 0);
         Interlocked.Exchange(ref _hasEverReceivedLiveFrame, 0);
+        Interlocked.Exchange(ref _liveFramesSubmitted, 0);
+        Interlocked.Exchange(ref _liveFramesReplacedBeforeRender, 0);
+    }
+
+    public long LiveFramesSubmitted => Interlocked.Read(ref _liveFramesSubmitted);
+
+    public long LiveFramesReplacedBeforeRender => Interlocked.Read(ref _liveFramesReplacedBeforeRender);
+
+    public string GetLiveFlowSummary(long renderedLiveFrames)
+    {
+        var submitted = Interlocked.Read(ref _liveFramesSubmitted);
+        var replaced = Interlocked.Read(ref _liveFramesReplacedBeforeRender);
+        var rendered = Math.Min(renderedLiveFrames, submitted);
+        var renderedPercent = submitted == 0 ? 0.0 : rendered * 100.0 / submitted;
+        var replacedPercent = submitted == 0 ? 0.0 : replaced * 100.0 / submitted;
+        return $"Flow: recv {submitted}, rendered {rendered} ({renderedPercent:F0}%), replaced {replaced} ({replacedPercent:F0}%)";
     }
 
     private bool HasEverReceivedLiveFrame()
@@ -92,12 +122,5 @@ public sealed class FrameInbox
         }
 
         return DateTime.UtcNow.Ticks - lastLiveTicks > _fallbackReentryTimeoutTicks;
-    }
-
-    private static VideoFrame? RetainForRender(VideoFrame? frame)
-    {
-        return frame is not null && frame.TryAddReference()
-            ? frame
-            : null;
     }
 }
